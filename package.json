@@ -1,0 +1,33 @@
+{
+  "name": "uk-dtm-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "d3-contour": "^4.0.3",
+    "earcut": "^3.2.4",
+    "fflate": "^0.8.3",
+    "geotiff": "^3.0.5",
+    "maplibre-gl": "^6.16.0",
+    "osmtogeojson": "^3.0.0-beta.5",
+    "polygon-clipping": "^0.15.7",
+    "proj4": "^2.22.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/d3-contour": "^3.0.6",
+    "@types/earcut": "^3.0.0",
+    "@types/geojson": "^7946.0.16",
+    "@types/proj4": "^2.5.6",
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
+}

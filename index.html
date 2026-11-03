@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UK Site Model — LIDAR terrain, buildings & drawings</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M0 14 L5 6 L8 10 L11 4 L16 14Z' fill='%23e0006b'/></svg>" />
+</head>
+<body>
+  <aside id="panel">
+    <header>
+      <h1>UK Site Model</h1>
+      <p>Environment Agency LIDAR + OpenStreetMap → 3D site models and drawings. England only.</p>
+    </header>
+
+    <section>
+      <h2>1 · Area</h2>
+      <div class="row">
+        <input id="search" placeholder="Postcode, grid ref (ST 750 647) or E,N" />
+        <button id="go">Go</button>
+      </div>
+      <select id="preset"><option value="">Bath presets…</option></select>
+      <div class="row">
+        <button id="draw">Draw rectangle on map</button>
+        <label class="inline"><input type="checkbox" id="lidarOverlay" /> LIDAR hillshade</label>
+      </div>
+      <div class="grid4">
+        <label>Min E<input id="minE" type="number" step="1" /></label>
+        <label>Min N<input id="minN" type="number" step="1" /></label>
+        <label>Max E<input id="maxE" type="number" step="1" /></label>
+        <label>Max N<input id="maxN" type="number" step="1" /></label>
+      </div>
+      <div id="areaInfo" class="hint"></div>
+    </section>
+
+    <section>
+      <h2>2 · Data</h2>
+      <label><input type="checkbox" id="useDsm" checked /> LIDAR DSM (building heights)</label>
+      <label><input type="checkbox" id="useOsm" checked /> OpenStreetMap (buildings, roads, rail, water, parks, bridges)</label>
+      <label><input type="checkbox" id="alignOsm" checked /> Auto-align OSM to LIDAR (fixes 1–3 m imagery offsets)</label>
+      <button id="fetch" class="primary">Fetch &amp; align data</button>
+      <div id="summary" class="hint"></div>
+    </section>
+
+    <section class="needs-data">
+      <h2>3 · 3D model</h2>
+      <div class="grid2">
+        <label>Mesh resolution
+          <select id="meshStep">
+            <option value="0">Auto</option><option value="1">1 m (full)</option><option value="2">2 m</option>
+            <option value="4">4 m</option><option value="8">8 m</option>
+          </select>
+        </label>
+        <label>Building height
+          <select id="heightMode">
+            <option value="0.7">LIDAR – typical roof</option>
+            <option value="0.4">LIDAR – eaves (lower)</option>
+            <option value="0.95">LIDAR – ridge (max)</option>
+            <option value="osm">OSM tags first</option>
+          </select>
+        </label>
+      </div>
+      <label><input type="checkbox" id="showBuildings" checked /> LOD1 buildings</label>
+      <label><input type="checkbox" id="drape" checked /> Drape map (roads, water, green) on terrain</label>
+      <label>Vertical exaggeration <span id="exagVal">1.0×</span>
+        <input type="range" id="exag" min="1" max="3" step="0.1" value="1" />
+      </label>
+      <button id="rebuild">Update model</button>
+      <h3>Export</h3>
+      <div class="grid2">
+        <label>OBJ up axis
+          <select id="objUp"><option value="z">Z up (Rhino, AutoCAD)</option><option value="y">Y up (Blender, SketchUp)</option></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="objSolid" /> Closed solid</label>
+      </div>
+      <button id="exportObj">Download OBJ (.zip, with texture)</button>
+      <div class="grid2">
+        <label>Model scale
+          <select id="stlScale">
+            <option value="500">1:500</option><option value="1000" selected>1:1000</option><option value="1250">1:1250</option>
+            <option value="2500">1:2500</option><option value="5000">1:5000</option><option value="1">1:1 (metres)</option>
+          </select>
+        </label>
+        <label>Base (mm; m at 1:1)<input id="baseMm" type="number" value="3" min="0.5" step="0.5" /></label>
+      </div>
+      <div id="stlInfo" class="hint"></div>
+      <button id="exportStl">Download STL (watertight, for printing)</button>
+    </section>
+
+    <section class="needs-data">
+      <h2>4 · Drawings</h2>
+      <div class="grid3">
+        <label>Contour interval
+          <select id="interval">
+            <option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option>
+            <option value="5">5 m</option><option value="10">10 m</option>
+          </select>
+        </label>
+        <label>Major every
+          <select id="majorEvery"><option>4</option><option selected>5</option><option>10</option></select>
+        </label>
+        <label>Smoothing
+          <select id="smooth"><option value="0">None</option><option value="1" selected>Light</option><option value="3">Strong</option></select>
+        </label>
+      </div>
+      <details>
+        <summary>Layers</summary>
+        <div id="layers" class="layers"></div>
+      </details>
+      <div class="grid3">
+        <label>Scale
+          <select id="drawScale">
+            <option value="200">1:200</option><option value="500">1:500</option><option value="1000" selected>1:1000</option>
+            <option value="1250">1:1250</option><option value="2500">1:2500</option>
+          </select>
+        </label>
+        <label>PNG DPI
+          <select id="dpi"><option>150</option><option selected>300</option><option>600</option></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="hillshade" /> Hillshade</label>
+      </div>
+      <div class="grid2">
+        <button id="previewDrawing">Preview drawing</button>
+        <button id="exportSvg">SVG</button>
+        <button id="exportPng">PNG</button>
+        <button id="exportDxf">DXF (AutoCAD/Rhino)</button>
+      </div>
+      <label>DXF coordinates
+        <select id="dxfOrigin"><option value="bng">True BNG (overlays OS mapping)</option><option value="local">Local origin (same as OBJ)</option></select>
+      </label>
+      <h3>Laser-cut contour stack</h3>
+      <div class="grid2">
+        <label>Layer interval (m)<input id="laserInterval" type="number" value="5" min="0.5" step="0.5" /></label>
+        <label>Layout
+          <select id="laserLayout"><option value="grid">Sheets side by side</option><option value="stacked">Stacked (at height)</option></select>
+        </label>
+      </div>
+      <div id="laserInfo" class="hint"></div>
+      <button id="exportLaser">Download laser-cut DXF (mm at model scale)</button>
+    </section>
+
+    <section class="needs-data">
+      <h2>5 · Raw dataset</h2>
+      <button id="exportData">Download aligned dataset (.zip: GeoJSON BNG + DTM/DSM .asc)</button>
+    </section>
+
+    <pre id="log"></pre>
+    <footer>
+      Contains Environment Agency LIDAR Composite DTM/DSM 1m © Environment Agency copyright and/or database right, OGL v3.
+      Map data © OpenStreetMap contributors, ODbL. OSTN15 transformation © Ordnance Survey.
+    </footer>
+  </aside>
+
+  <main>
+    <nav id="tabs">
+      <button data-tab="map" class="active">Map</button>
+      <button data-tab="model">3D preview</button>
+      <button data-tab="drawing">Drawing</button>
+      <span id="busy" hidden>Working…</span>
+    </nav>
+    <div id="view-map" class="view active"></div>
+    <div id="view-model" class="view"><div class="empty">Fetch data to see the 3D model.</div></div>
+    <div id="view-drawing" class="view"><div class="empty">Fetch data, then “Preview drawing”.</div></div>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
