@@ -57,6 +57,15 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
 
+## Site shapes, extra data and markings
+
+- **Custom site shapes:** rectangle, hexagon, circle, or a free polygon (click corners; double-click/Enter to finish; Backspace removes a corner; Esc cancels; *Undo* restores the previous area). Data is fetched for the bounding box and clipped exactly to the outline; the terrain is cut to the outline (edge, skirt and base follow it), drawings and laser sheets are clipped to it. The 4 km² limit applies to the polygon's area.
+- **Listed buildings:** Historic England's National Heritage List (points matched to the containing/nearest footprint, highest grade wins) → `LISTED` drawing layer, `listed_*` GeoJSON properties, `buildings.csv`.
+- **`buildings.csv`** (in the OBJ, STL and data zips): id, object name, name, address, levels, material, heights, height source, roof parts and types, eaves/ridge, listing.
+- **Road markings** (`ROAD-MARKINGS` layer, `ROAD-MARK*` drawing layers) are generated from OSM tags: centre and lane lines (2 m dash / 4 m gap), zebra crossings, signal crossings, stop and give-way lines, cycle lanes, double yellows. There is no open imagery to detect markings from, so only what OSM tags support is drawn.
+- **Entrances** (OSM `entrance` nodes) appear on an `ENTRANCE` drawing layer.
+- Fetchers for EA flood zones/defences, police crime and Open-Meteo wind (used by the analysis panel) live in `src/data/` with an IndexedDB response cache (`data/cache.ts`).
+
 ## Choosing mesh size
 
 | Control | Effect |

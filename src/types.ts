@@ -41,6 +41,22 @@ export interface AreaFeature {
   tags: Record<string, string>;
 }
 
+export type PointKind = 'entrance' | 'crossing' | 'signals' | 'stop' | 'giveway' | 'transit' | 'poi' | 'lamp';
+
+/** A tagged OSM point (door, crossing, bus stop, shop ...). */
+export interface PointFeature {
+  id: string;
+  kind: PointKind;
+  p: XY;
+  tags: Record<string, string>;
+}
+
+export interface ListedInfo {
+  grade: string;
+  entry: number;
+  name: string;
+}
+
 export type HeightSource = 'lidar' | 'osm-height' | 'osm-levels' | 'default';
 
 /** Fitted roof shape for LOD1.5: a flat block, or a gable / hip over the footprint's oriented box. */
@@ -73,6 +89,8 @@ export interface Building {
   roof?: RoofFit;
   /** LOD2-fit: one fitted roof per part (house in a terrace, wing of an L-shape). */
   roofParts?: RoofFit[];
+  /** Historic England listing, if any. */
+  listed?: ListedInfo;
 }
 
 /** The fetched, aligned dataset (everything in BNG / ODN heights). */
@@ -86,6 +104,10 @@ export interface SiteData {
   lines: LineFeature[];
   areas: AreaFeature[];
   trees: XY[];
+  /** Doors, crossings, stops, POIs (OSM). */
+  points: PointFeature[];
+  /** Custom site outline (BNG, CCW, open ring); absent for a plain rectangle. `bbox` then bounds it. */
+  shape?: Ring;
   /** Shift applied to OSM features to match LIDAR (m east, m north). */
   osmOffset: XY;
   fetchedAt: string;

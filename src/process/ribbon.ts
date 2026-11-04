@@ -24,14 +24,15 @@ export function polylineLength(line: Ring): number {
  */
 export function offsetOutline(pts: XY[], half: number): { left: XY[]; right: XY[] } {
   const n = pts.length;
-  const dir = (i: number): XY => {
-    const a = pts[Math.max(0, i)], b = pts[Math.min(n - 1, i + 1)];
-    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
-  };
+  // Unit direction of each segment; the end vertices use their single neighbouring segment.
+  const seg: XY[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const l = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) || 1;
+    seg.push([(pts[i + 1][0] - pts[i][0]) / l, (pts[i + 1][1] - pts[i][1]) / l]);
+  }
   const left: XY[] = [], right: XY[] = [];
   for (let i = 0; i < n; i++) {
-    const d0 = dir(i - 1), d1 = dir(i);
+    const d0 = seg[Math.max(0, i - 1)], d1 = seg[Math.min(n - 2, i)];
     const nx = -(d0[1] + d1[1]), ny = d0[0] + d1[0];
     const len = Math.hypot(nx, ny) || 1;
     // Miter length: half / cos(theta / 2), limited to 1.5x.

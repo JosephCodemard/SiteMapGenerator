@@ -3,7 +3,8 @@ import { Map as MapLibre, NavigationControl, ScaleControl, setWorkerUrl, type Ge
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { toBNG, toWGS } from '../geo/bng';
-import type { BBox } from '../types';
+import { bboxOf, circle, hexagon, normaliseShape, isSimple, type ShapeKind } from '../process/shape';
+import type { BBox, Ring, XY } from '../types';
 
 setWorkerUrl(workerUrl);
 
@@ -15,9 +16,14 @@ const EA_WMS =
 /** Basemap + BNG-aligned rectangle selection. */
 export class AreaMap {
   map: MapLibre;
-  private drawing = false;
+  private tool: ShapeKind | null = null;
   private start: [number, number] | null = null;
+  private verts: XY[] = [];
+  private hover: XY | null = null;
+  /** Called with the finished outline (null = plain rectangle) and its bounding box. */
+  onShape: (shape: Ring | null, b: BBox) => void = () => {};
   onChange: (b: BBox) => void = () => {};
+  onMessage: (m: string) => void = () => {};
 
   constructor(el: HTMLElement, center: [number, number]) {
     this.map = new MapLibre({
@@ -50,22 +56,83 @@ export class AreaMap {
     this.map.addControl(new NavigationControl({ showCompass: false }), 'top-right');
     this.map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
 
+    const bng = (e: { lngLat: { lng: number; lat: number } }): XY => toBNG(e.lngLat.lng, e.lngLat.lat);
     this.map.on('mousedown', (e) => {
-      if (!this.drawing) return;
+      if (!this.tool || this.tool === 'polygon') return;
       e.preventDefault();
-      this.start = toBNG(e.lngLat.lng, e.lngLat.lat);
+      this.start = bng(e);
     });
     this.map.on('mousemove', (e) => {
-      if (!this.drawing || !this.start) return;
-      this.setArea(this.rect(this.start, toBNG(e.lngLat.lng, e.lngLat.lat)), true);
+      if (!this.tool) return;
+      const p = bng(e);
+      if (this.tool === 'polygon') { this.hover = p; if (this.verts.length) this.showPolygon(); return; }
+      if (this.start) this.preview(this.start, p);
     });
     this.map.on('mouseup', (e) => {
-      if (!this.drawing || !this.start) return;
-      const b = this.rect(this.start, toBNG(e.lngLat.lng, e.lngLat.lat));
+      if (!this.tool || this.tool === 'polygon' || !this.start) return;
+      const [a, p] = [this.start, bng(e)];
       this.start = null;
-      this.setDrawing(false);
-      if (b.maxE - b.minE >= 10 && b.maxN - b.minN >= 10) this.setArea(b);
+      if (this.tool === 'rect') {
+        const b = this.rect(a, p);
+        this.setTool(null);
+        if (b.maxE - b.minE >= 10 && b.maxN - b.minN >= 10) { this.setArea(b); this.onShape(null, b); }
+        return;
+      }
+      this.finish(this.shapeFrom(a, p));
     });
+    this.map.on('click', (e) => {
+      if (this.tool !== 'polygon') return;
+      this.verts.push(bng(e));
+      this.showPolygon();
+    });
+    this.map.on('dblclick', (e) => {
+      if (this.tool !== 'polygon') return;
+      e.preventDefault();
+      this.verts.pop(); // the double-click's second click was added as a vertex
+      this.finishPolygon();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (this.tool !== 'polygon') return;
+      if (e.key === 'Enter') this.finishPolygon();
+      else if (e.key === 'Backspace') { this.verts.pop(); this.showPolygon(); }
+      else if (e.key === 'Escape') this.setTool(null);
+    });
+  }
+
+  /** Outline for a drag from `a` to `b` with the current tool. */
+  private shapeFrom(a: XY, b: XY): Ring | null {
+    const r = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (this.tool === 'hexagon') return hexagon(a, r);
+    if (this.tool === 'circle') return circle(a, r);
+    return null; // rectangle
+  }
+
+  private preview(a: XY, b: XY) {
+    const shape = this.shapeFrom(a, b);
+    this.setArea(shape ? bboxOf(shape) : this.rect(a, b), true, shape);
+  }
+
+  private finish(shape: Ring | null) {
+    const box = shape ? bboxOf(shape) : null;
+    this.setTool(null);
+    if (shape && box && box.maxE - box.minE >= 10) { this.setArea(box, true, shape); this.onShape(shape, box); }
+  }
+
+  private showPolygon() {
+    const pts = this.hover && this.tool === 'polygon' ? [...this.verts, this.hover] : this.verts;
+    (this.map.getSource('aoi') as GeoJSONSource | undefined)?.setData({
+      type: 'Feature', properties: {},
+      geometry: pts.length > 2 ? { type: 'Polygon', coordinates: [[...pts.map(([e, n]) => toWGS(e, n)), toWGS(...pts[0])]] }
+        : { type: 'LineString', coordinates: pts.map(([e, n]) => toWGS(e, n)) },
+    });
+  }
+
+  private finishPolygon() {
+    const ring = normaliseShape(this.verts);
+    if (ring.length < 3) { this.onMessage('A polygon needs at least 3 corners.'); return; }
+    if (!isSimple(ring)) { this.onMessage('The outline crosses itself — undo a corner (Backspace) and try again.'); return; }
+    this.verts = [];
+    this.finish(ring);
   }
 
   private rect(a: [number, number], b: [number, number]): BBox {
@@ -75,19 +142,25 @@ export class AreaMap {
     };
   }
 
-  setDrawing(on: boolean) {
-    this.drawing = on;
-    on ? this.map.dragPan.disable() : this.map.dragPan.enable();
-    this.map.getCanvas().style.cursor = on ? 'crosshair' : '';
+  /** Start a drawing tool (rectangle: drag corner to corner; hexagon/circle: drag from the centre; polygon: click corners, double-click to finish). */
+  setTool(kind: ShapeKind | null) {
+    this.tool = kind;
+    this.start = null;
+    this.verts = [];
+    this.hover = null;
+    kind ? this.map.dragPan.disable() : this.map.dragPan.enable();
+    kind === 'polygon' ? this.map.doubleClickZoom.disable() : this.map.doubleClickZoom.enable();
+    this.map.getCanvas().style.cursor = kind ? 'crosshair' : '';
   }
 
-  /** Show the BNG rectangle (it's slightly rotated on a Web Mercator map). */
-  setArea(b: BBox, preview = false) {
-    const ring = [
-      toWGS(b.minE, b.minN), toWGS(b.maxE, b.minN), toWGS(b.maxE, b.maxN), toWGS(b.minE, b.maxN), toWGS(b.minE, b.minN),
-    ];
+  /** Back-compat: rectangle tool on/off. */
+  setDrawing(on: boolean) { this.setTool(on ? 'rect' : null); }
+
+  /** Show the site (a BNG rectangle, or a custom outline). */
+  setArea(b: BBox, preview = false, shape: Ring | null = null) {
+    const ring = (shape ?? [[b.minE, b.minN], [b.maxE, b.minN], [b.maxE, b.maxN], [b.minE, b.maxN]]).map(([e, n]) => toWGS(e, n));
     (this.map.getSource('aoi') as GeoJSONSource | undefined)?.setData({
-      type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] },
+      type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] },
     });
     if (!preview) this.onChange(b);
   }

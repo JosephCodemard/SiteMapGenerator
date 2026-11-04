@@ -1,5 +1,7 @@
 import './style.css';
 import { strToU8, zipSync } from 'fflate';
+import { buildingAttributesCsv } from './export/attributes';
+import { attachListed, fetchListed } from './data/nhle';
 import { fetchSite, MAX_AREA_KM2, rasterToAsc, siteToGeoJson, type SiteInputs } from './data/site';
 import { parseGridRef, toBNG, toWGS } from './geo/bng';
 import { buildingHeights, DEFAULT_HEIGHTS, type HeightOptions } from './process/buildings';
@@ -18,7 +20,8 @@ import { writeObj } from './export/obj';
 import { writeStl } from './export/stl';
 import { AreaMap } from './view/map';
 import { Viewer3D } from './view/viewer3d';
-import type { BBox, SiteData } from './types';
+import { bboxOf, clipPolygonToShape, polygonArea } from './process/shape';
+import type { BBox, Ring, SiteData } from './types';
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const num = (id: string) => Number($(id).value);
@@ -55,6 +58,8 @@ const MODEL_PRESETS: Record<string, Record<string, string | boolean>> = {
 
 // ---------------------------------------------------------------- state
 let bbox: BBox;
+let shape: Ring | null = null;
+const shapeHistory: { bbox: BBox; shape: Ring | null }[] = [];
 let site: SiteData | null = null;
 let inputs: SiteInputs | null = null;
 let scene: Scene | null = null;
@@ -140,15 +145,17 @@ const zip = (files: Record<string, Uint8Array>, level: 0 | 1 | 6 = 6) => zipSync
 const blobBytes = async (b: Blob) => new Uint8Array(await b.arrayBuffer());
 
 // ---------------------------------------------------------------- area
-function setBBox(b: BBox, fromMap = false) {
+function setBBox(b: BBox, fromMap = false, keepShape = false) {
+  if (!keepShape) shape = null;
   bbox = b;
   for (const k of ['minE', 'minN', 'maxE', 'maxN'] as const) $(k).value = String(b[k]);
   const w = b.maxE - b.minE, h = b.maxN - b.minN;
-  const km2 = (w * h) / 1e6;
+  const km2 = (shape ? polygonArea(shape) : w * h) / 1e6;
   const mb = (w * h * 4 * (checked('useDsm') ? 2 : 1)) / 1e6;
-  $('areaInfo').innerHTML = `${w} × ${h} m · ${km2.toFixed(2)} km² · ~${mb.toFixed(0)} MB LIDAR download` +
+  $('areaInfo').innerHTML = `${shape ? 'custom shape, bounds ' : ''}${w} × ${h} m · ${km2.toFixed(2)} km² · ~${mb.toFixed(0)} MB LIDAR download` +
     (km2 > MAX_AREA_KM2 ? ` <b style="color:#c00">exceeds ${MAX_AREA_KM2} km² limit</b>` : '');
-  if (!fromMap) areaMap.setArea(b, true);
+  if (!fromMap) areaMap.setArea(b, true, shape);
+  $('undoShape').disabled = shapeHistory.length === 0;
 }
 
 function centred(e: number, n: number, size: number): BBox {
@@ -205,6 +212,7 @@ function readSettings(): ModelSettings {
     walls: checked('fWalls'),
     trees: checked('fTrees') ? (sel('treeMode') as ModelSettings['trees']) : 'off',
     roofDetails: true,
+    markings: checked('fMarkings'),
     reliefMm: num('reliefMm') || DEFAULT_SETTINGS.reliefMm,
     waterDepthMm: num('waterMm'),
     featureStep: num('featureStep'),
@@ -216,7 +224,7 @@ function drawingFeatures(): DrawingFeatures {
   const s = readSettings();
   return {
     buildings: s.buildings !== 'off', roads: s.roads, paths: s.paths, rail: s.rail, water: s.water, green: s.green,
-    bridges: s.bridges, walls: s.walls, roofs: s.buildings === 'lod15' || s.buildings === 'lod2fit',
+    bridges: s.bridges, walls: s.walls, markings: s.markings, roofs: s.buildings === 'lod15' || s.buildings === 'lod2fit',
     trees: site ? treesFor(site, s.trees) : [],
   };
 }
@@ -260,10 +268,17 @@ function applyPreset(name: string) {
 // ---------------------------------------------------------------- data
 async function fetchData() {
   const result = await busy('Fetching data', () =>
-    fetchSite(bbox, { dsm: checked('useDsm'), osm: checked('useOsm'), align: checked('alignOsm'), heights: heightOptions(), osmData }, log));
+    fetchSite(bbox, { dsm: checked('useDsm'), osm: checked('useOsm'), align: checked('alignOsm'), heights: heightOptions(), osmData, shape: shape ?? undefined }, log));
   if (!result) return;
   ({ site, inputs } = result);
   scene = null;
+  if (checked('useListed') && site.buildings.length) {
+    try {
+      const entries = await fetchListed(site.bbox);
+      const n = attachListed(site.buildings, entries);
+      log(`Historic England: ${entries.length} listing points, ${n} buildings tagged.`);
+    } catch (e) { log(`⚠ Listed buildings unavailable (${e instanceof Error ? e.message : e}); continuing without.`); }
+  }
   contourCache = null;
   document.querySelectorAll('.needs-data').forEach((s) => s.classList.remove('disabled'));
   showSummary();
@@ -330,7 +345,9 @@ async function rebuildModel() {
     const s = site!;
     const settings = readSettings();
     await stage('Heights…');
+    const listed = new Map(s.buildings.filter((b) => b.listed).map((b) => [b.id, b.listed!]));
     s.buildings = buildingHeights(inputs!.footprints, s.dtm, s.dsm, heightOptions());
+    for (const b of s.buildings) b.listed = listed.get(b.id);
     if (settings.buildings === 'lod2' && s.buildings.length > 1500) {
       log(`LOD2 roofs for ${s.buildings.length} buildings can take a minute — raise “LIDAR-roof detail” to 2 m to speed it up.`);
     }
@@ -410,6 +427,7 @@ async function exportObj() {
         (structure === 'layers' ? 'One .obj file per layer: import each into its own layer. Every building/tree/bridge is a named object.'
           : 'One .obj with a group (g) per layer and an object (o) per building/tree/bridge.'))),
       'origin.txt': strToU8(`${s.origin[0]} ${s.origin[1]} 0\n`),
+      'buildings.csv': strToU8(buildingAttributesCsv(s)),
     };
     if (structure === 'combined') files['model.obj'] = await blobBytes(new Blob(obj));
     else for (const [name, parts] of Object.entries(layers)) files[`${name}.obj`] = await blobBytes(new Blob(parts));
@@ -423,6 +441,7 @@ async function exportStl() {
   await busy('Exporting STL', async () => {
     const sc = await ensureModel();
     if (!sc) return;
+    const s = site!;
     const { k, exag, baseZ, unit } = stlParams();
     const t = { scale: k, zExaggeration: exag, zOffset: baseZ };
     const named: [string, Mesh][] = [['TERRAIN', sc.terrainSolid(baseZ)]];
@@ -432,7 +451,7 @@ async function exportStl() {
       download(`site_${stamp()}_${scaleName}.stl`, writeStl(named.map(([, m]) => m), t));
       return;
     }
-    const files: Record<string, Uint8Array> = {};
+    const files: Record<string, Uint8Array> = { 'buildings.csv': strToU8(buildingAttributesCsv(s)) };
     for (const [name, mesh] of named) files[`${name}.stl`] = new Uint8Array(writeStl([mesh], t));
     files['README.txt'] = strToU8(readme(`STL: units ${unit} at 1:${num('stlScale')}, vertical exaggeration ${exag}x. ` +
       'All files share one origin and register when loaded together. Layers are closed solids; overlapping shells (e.g. roads over terrain) are merged by your slicer. ' +
@@ -488,6 +507,7 @@ function drawingSvg(): string {
     title: `Site plan — E ${site!.bbox.minE}, N ${site!.bbox.minN}`,
     underlay: checked('hillshade') ? hillshadeDataUrl() : undefined,
     furniture: true,
+    shape: site!.shape,
   });
 }
 
@@ -545,7 +565,11 @@ async function exportLaser() {
     const bands = contourBands(grid, levels);
     // Convert to mm on the cutting bed (origin at site SW corner).
     const toMm = (r: [number, number][]) => r.map(([e, n]) => [(e - s.bbox.minE) * k, (n - s.bbox.minN) * k] as [number, number]);
-    const mmBands = bands.map((b) => ({ level: b.level, polygons: b.polygons.map((p) => p.map(toMm)) }));
+    const shapeMm = s.shape ? toMm(s.shape) : null;
+    const mmBands = bands.map((b) => ({
+      level: b.level,
+      polygons: b.polygons.map((p) => p.map(toMm)).flatMap((rings) => (shapeMm ? clipPolygonToShape(rings, shapeMm) : [rings])),
+    }));
     const mmBox: BBox = { minE: 0, minN: 0, maxE: (s.bbox.maxE - s.bbox.minE) * k, maxN: (s.bbox.maxN - s.bbox.minN) * k };
     const layout = sel('laserLayout') as 'grid' | 'stacked';
     const dxf = writeContourStackDxf(mmBands, mmBox, { origin: [0, 0], layout, gap: 10 });
@@ -560,6 +584,7 @@ async function exportData() {
     const s = site!;
     const files: Record<string, Uint8Array> = {
       'features_bng.geojson': strToU8(siteToGeoJson(s)),
+      'buildings.csv': strToU8(buildingAttributesCsv(s)),
       'dtm_1m.asc': strToU8(rasterToAsc(s.dtm)),
       'README.txt': strToU8(readme('GeoJSON coordinates are EPSG:27700 (British National Grid). Grids are ESRI ASCII, 1 m, m ODN.')),
     };
@@ -577,7 +602,7 @@ function selectTab(name: string) {
 
 const start = PRESETS[0];
 const areaMap = new AreaMap($('view-map'), [start.lon, start.lat]);
-areaMap.onChange = (b) => setBBox(b, true);
+areaMap.onChange = () => { /* shape tools report through onShape */ };
 
 areaMap.map.on('load', () => {
   const [e, n] = toBNG(start.lon, start.lat);
@@ -595,7 +620,26 @@ preset.onchange = () => {
 
 $('go').onclick = () => search($('search').value);
 $('search').onkeydown = (e) => { if (e.key === 'Enter') search($('search').value); };
-$('draw').onclick = () => { selectTab('map'); areaMap.setDrawing(true); log('Drag on the map to draw the site rectangle.'); };
+const SHAPE_HELP: Record<string, string> = {
+  rect: 'Rectangle: drag corner to corner.',
+  hexagon: 'Hexagon: drag from the centre outwards (the drag distance is the corner radius).',
+  circle: 'Circle: drag from the centre outwards.',
+  polygon: 'Polygon: click each corner, double-click or Enter to finish, Backspace removes the last corner, Esc cancels.',
+};
+$('shapeKind').onchange = () => { $('shapeHelp').textContent = SHAPE_HELP[sel('shapeKind')]; };
+$('draw').onclick = () => { selectTab('map'); areaMap.setTool(sel('shapeKind') as never); log(SHAPE_HELP[sel('shapeKind')]); };
+areaMap.onMessage = log;
+areaMap.onShape = (sh, b) => {
+  shapeHistory.push({ bbox, shape });
+  shape = sh;
+  setBBox(b, true, true);
+};
+$('undoShape').onclick = () => {
+  const prev = shapeHistory.pop();
+  if (!prev) return;
+  shape = prev.shape;
+  setBBox(prev.bbox, false, true);
+};
 $('lidarOverlay').onchange = () => areaMap.setLidarOverlay(checked('lidarOverlay'));
 for (const k of ['minE', 'minN', 'maxE', 'maxN']) {
   $(k).onchange = () => {
@@ -657,4 +701,4 @@ for (const l of LAYER_DEFS) {
 document.querySelectorAll('.needs-data').forEach((s) => s.classList.add('disabled'));
 updateMeshSummary();
 // Exposed for debugging in the console.
-Object.assign(window, { toBNG, toWGS, getSite: () => site, getScene: () => scene });
+Object.assign(window, { toBNG, toWGS, getSite: () => site, getScene: () => scene, setShape: (r: Ring) => areaMap.onShape(r, bboxOf(r)) });

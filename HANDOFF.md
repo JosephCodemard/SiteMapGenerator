@@ -239,6 +239,14 @@ The full plan is in `PLAN.md` (datasets audited live, milestones M1–M6). Done 
 - Known: 1 of 557 Pulteney parts has an open edge (pinch); chimneys/parapets not yet.
 - Added to the plan on request: custom site shapes (M2) and side-elevation slices from a drawn cut line (M4).
 
+## 7c. Iteration 3, milestone M2 (2026-11-04)
+
+Custom shapes (`process/shape.ts`, `view/map.ts` tools, `SiteData.shape`), data fetchers (`data/{cache,nhle,floodzones,defences,police,weather}.ts`), OSM points (entrances, crossings, POIs, stops: `SiteData.points`), road markings (`process/markings.ts`), `export/attributes.ts`. Fixed on the way:
+- `offsetOutline` flared both ends of every ribbon (zero end-direction): fixed (also affected bridge decks and walls).
+- Floors triangulated with earcut dropped collinear boundary vertices (T-junctions against walls): `earClipLoop` now uses every vertex.
+- Dropping "tiny" draped pieces left holes: only exactly-degenerate pieces are dropped now.
+Verified: hexagonal site end to end in the browser (STL closure for terrain, buildings, markings 88/88).
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.

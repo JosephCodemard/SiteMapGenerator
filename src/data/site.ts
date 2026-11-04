@@ -1,9 +1,10 @@
 import { fetchLidar } from './lidar';
-import { fetchOsm, parseOsm, shiftAndClip, type OsmFootprint } from './osm';
+import { clipToShape, fetchOsm, parseOsm, shiftAndClip, type OsmFootprint } from './osm';
+import { polygonArea } from '../process/shape';
 import { estimateOffset } from '../process/align';
 import { buildingHeights, type HeightOptions } from '../process/buildings';
 import { fillNoData } from '../process/raster';
-import type { BBox, Raster, SiteData } from '../types';
+import type { BBox, Raster, Ring, SiteData } from '../types';
 
 export const MAX_AREA_KM2 = 4;
 
@@ -15,6 +16,8 @@ export interface FetchOptions {
   heights: HeightOptions;
   /** Overpass-JSON supplied by the user (e.g. from overpass-turbo); used instead of querying Overpass. */
   osmData?: unknown;
+  /** Custom site outline (BNG); `bbox` passed to fetchSite must bound it. */
+  shape?: Ring;
 }
 
 export type Log = (msg: string) => void;
@@ -26,7 +29,7 @@ export interface SiteInputs {
 
 /** Fetch DTM, DSM and OSM for a BNG bbox and align them into one dataset. */
 export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal?: AbortSignal): Promise<{ site: SiteData; inputs: SiteInputs }> {
-  const area = ((bbox.maxE - bbox.minE) * (bbox.maxN - bbox.minN)) / 1e6;
+  const area = (opts.shape ? polygonArea(opts.shape) : (bbox.maxE - bbox.minE) * (bbox.maxN - bbox.minN)) / 1e6;
   if (area > MAX_AREA_KM2) throw new Error(`Area is ${area.toFixed(2)} km²; the limit is ${MAX_AREA_KM2} km²`);
 
   // OSM is fetched with a margin so features can be shifted into the site before clipping.
@@ -63,7 +66,8 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
     ({ offset } = estimateOffset(rawOsm.buildings.map((b) => b.rings), dtm, dsm));
     log(`OSM → LIDAR alignment: shifted ${offset[0].toFixed(2)} m E, ${offset[1].toFixed(2)} m N`);
   }
-  const osm = rawOsm ? shiftAndClip(rawOsm, offset, bbox) : null;
+  let osm = rawOsm ? shiftAndClip(rawOsm, offset, bbox) : null;
+  if (osm && opts.shape) osm = clipToShape(osm, opts.shape);
   const footprints = osm?.buildings ?? [];
   const site: SiteData = {
     bbox,
@@ -73,6 +77,8 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
     lines: osm?.lines ?? [],
     areas: osm?.areas ?? [],
     trees: osm?.trees ?? [],
+    points: osm?.points ?? [],
+    shape: opts.shape,
     osmOffset: offset,
     fetchedAt: new Date().toISOString(),
     filledCells: filled,
@@ -103,7 +109,9 @@ export function siteToGeoJson(site: SiteData): string {
   for (const b of site.buildings) {
     features.push({
       type: 'Feature', id: b.id,
-      properties: { layer: 'building', ground_m: +b.ground.toFixed(2), top_m: +b.top.toFixed(2), height_m: +(b.top - b.ground).toFixed(2), height_source: b.source, ...b.tags },
+      properties: { layer: 'building', ground_m: +b.ground.toFixed(2), top_m: +b.top.toFixed(2), height_m: +(b.top - b.ground).toFixed(2), height_source: b.source,
+        ...(b.roofParts ? { roof_parts: b.roofParts.map((r) => r.type).join(','), eaves_m: +Math.min(...b.roofParts.map((r) => r.eaves)).toFixed(2), ridge_m: +Math.max(...b.roofParts.map((r) => r.ridge)).toFixed(2) } : {}),
+        ...(b.listed ? { listed_grade: b.listed.grade, listed_entry: b.listed.entry, listed_name: b.listed.name } : {}), ...b.tags },
       geometry: { type: 'Polygon', coordinates: b.rings.map(close) },
     });
   }
@@ -114,6 +122,8 @@ export function siteToGeoJson(site: SiteData): string {
     features.push({ type: 'Feature', id: l.id, properties: { layer: l.kind, bridge: l.bridge, tunnel: l.tunnel, ...l.tags }, geometry: { type: 'LineString', coordinates: l.coords } });
   }
   for (const t of site.trees) features.push({ type: 'Feature', properties: { layer: 'tree' }, geometry: { type: 'Point', coordinates: t } });
+  for (const q of site.points) features.push({ type: 'Feature', id: q.id, properties: { layer: q.kind, ...q.tags }, geometry: { type: 'Point', coordinates: q.p } });
+  if (site.shape) features.push({ type: 'Feature', properties: { layer: 'site' }, geometry: { type: 'Polygon', coordinates: [[...site.shape, site.shape[0]]] } });
   return JSON.stringify({
     type: 'FeatureCollection',
     crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::27700' } },

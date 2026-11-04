@@ -2,7 +2,8 @@ import osmtogeojson from 'osmtogeojson';
 import type { Feature, Geometry, Position } from 'geojson';
 import { bboxToWGS, toBNG } from '../geo/bng';
 import { clipPolygonToBox, clipPolyline } from '../process/clip';
-import type { AreaFeature, AreaKind, BBox, LineFeature, LineKind, Ring, XY } from '../types';
+import { clipPolygonToShape, clipPolylineToShape, pointInShape } from '../process/shape';
+import type { AreaFeature, AreaKind, BBox, LineFeature, LineKind, PointFeature, PointKind, Ring, XY } from '../types';
 
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -21,6 +22,7 @@ export interface OsmResult {
   lines: LineFeature[];
   areas: AreaFeature[];
   trees: XY[];
+  points: PointFeature[];
 }
 
 function query(b: { west: number; south: number; east: number; north: number }): string {
@@ -39,6 +41,13 @@ function query(b: { west: number; south: number; east: number; north: number }):
   wr["man_made"="bridge"]${bb};
   wr["place"="square"]${bb};
   node["natural"="tree"]${bb};
+  node["entrance"]${bb};
+  node["highway"~"^(crossing|traffic_signals|stop|give_way|bus_stop|street_lamp)$"]${bb};
+  node["amenity"]${bb};
+  node["shop"]${bb};
+  node["tourism"]${bb};
+  node["public_transport"]${bb};
+  node["railway"~"^(station|halt|tram_stop)$"]${bb};
 );
 out body;
 >;
@@ -95,6 +104,20 @@ function areaKind(t: Record<string, string>): AreaKind | null {
   return null;
 }
 
+/** Classify a tagged node. */
+export function pointKind(t: Record<string, string>): PointKind | null {
+  if (t.entrance) return 'entrance';
+  if (t.highway === 'crossing' || (t.crossing && t.highway !== 'footway')) return 'crossing';
+  if (t.highway === 'traffic_signals') return 'signals';
+  if (t.highway === 'stop') return 'stop';
+  if (t.highway === 'give_way') return 'giveway';
+  if (t.highway === 'street_lamp') return 'lamp';
+  if (t.highway === 'bus_stop' || t.public_transport || /^(station|halt|tram_stop)$/.test(t.railway ?? '')) return 'transit';
+  if (t.amenity && !/^(bench|waste_basket|bicycle_parking|post_box|drinking_water|recycling|parking_entrance)$/.test(t.amenity)) return 'poi';
+  if (t.shop || t.tourism) return 'poi';
+  return null;
+}
+
 const proj = (ring: Position[]): Ring => ring.map(([lon, lat]) => toBNG(lon, lat));
 
 function polygons(g: Geometry): Position[][][] {
@@ -118,6 +141,18 @@ export function shiftAndClip(r: OsmResult, offset: XY, bbox: BBox): OsmResult {
     areas: r.areas.flatMap((a) => clipPolygonToBox(a.rings.map(mv), bbox).map((rings) => ({ ...a, rings }))),
     lines: r.lines.flatMap((l) => clipPolyline(mv(l.coords), bbox).map((coords) => ({ ...l, coords }))),
     trees: r.trees.map(([e, n]) => [e + dx, n + dy] as XY).filter(inBox),
+    points: r.points.map((q) => ({ ...q, p: [q.p[0] + dx, q.p[1] + dy] as XY })).filter((q) => inBox(q.p)),
+  };
+}
+
+/** Clip every feature to a custom site outline (after `shiftAndClip` to its bounding box). */
+export function clipToShape(r: OsmResult, shape: Ring): OsmResult {
+  return {
+    buildings: r.buildings.flatMap((b) => clipPolygonToShape(b.rings, shape).map((rings, k) => ({ ...b, id: k ? `${b.id}~${k}` : b.id, rings }))),
+    areas: r.areas.flatMap((a) => clipPolygonToShape(a.rings, shape).map((rings) => ({ ...a, rings }))),
+    lines: r.lines.flatMap((l) => clipPolylineToShape(l.coords, shape).map((coords) => ({ ...l, coords }))),
+    trees: r.trees.filter((p) => pointInShape(p, shape)),
+    points: r.points.filter((q) => pointInShape(q.p, shape)),
   };
 }
 
@@ -133,7 +168,7 @@ export async function fetchOsm(bbox: BBox, signal?: AbortSignal): Promise<OsmRes
 export function parseOsm(raw: unknown, bbox: BBox): OsmResult {
   const fc = osmtogeojson(raw, { flatProperties: false }); // keep tags under properties.tags
 
-  const out: OsmResult = { buildings: [], lines: [], areas: [], trees: [] };
+  const out: OsmResult = { buildings: [], lines: [], areas: [], trees: [], points: [] };
   for (const f of fc.features as Feature<Geometry, Record<string, unknown>>[]) {
     const tags = (f.properties?.tags ?? {}) as Record<string, string>;
     const id = String(f.id ?? f.properties?.id ?? '');
@@ -141,9 +176,12 @@ export function parseOsm(raw: unknown, bbox: BBox): OsmResult {
     if (!g) continue;
 
     if (g.type === 'Point') {
-      if (tags.natural === 'tree') {
-        const p = toBNG(g.coordinates[0], g.coordinates[1]);
-        if (p[0] >= bbox.minE && p[0] <= bbox.maxE && p[1] >= bbox.minN && p[1] <= bbox.maxN) out.trees.push(p);
+      const p = toBNG(g.coordinates[0], g.coordinates[1]);
+      if (p[0] < bbox.minE || p[0] > bbox.maxE || p[1] < bbox.minN || p[1] > bbox.maxN) continue;
+      if (tags.natural === 'tree') out.trees.push(p);
+      else {
+        const kind = pointKind(tags);
+        if (kind) out.points.push({ id, kind, p, tags });
       }
       continue;
     }

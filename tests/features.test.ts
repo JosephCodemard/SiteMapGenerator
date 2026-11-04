@@ -3,7 +3,7 @@ import { bufferLines, lineWidth, unionPolygons } from '../src/process/buffer';
 import { buildContext } from '../src/process/context';
 import { boundaryLoops, drapeSurface, mergeMeshes, rasterizePolygons, solidWithFlatFloor, solidWithMirrorFloor } from '../src/process/geom';
 import { stepForTriangles, terrainGrid, terrainMesh, terrainTriangles, type Mesh } from '../src/process/mesh';
-import { polylineLength, resample, ribbonSolid } from '../src/process/ribbon';
+import { offsetOutline, polylineLength, resample, ribbonSolid } from '../src/process/ribbon';
 import { adaptiveTerrain, rtinGridSize } from '../src/process/rtin';
 import { fitRoofParts } from '../src/process/roofparts';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh } from '../src/process/roofs';
@@ -181,6 +181,12 @@ describe('draped pads', () => {
 });
 
 describe('ribbons', () => {
+  it('offset outlines are straight to the very ends (no flaring)', () => {
+    const { left, right } = offsetOutline(resample([[0, 0], [20, 0]], 5), 1.5);
+    for (const p of left) expect(p[1]).toBeCloseTo(1.5, 9);
+    for (const p of right) expect(p[1]).toBeCloseTo(-1.5, 9);
+    expect(left[0][0]).toBeCloseTo(0, 9); expect(left[left.length - 1][0]).toBeCloseTo(20, 9);
+  });
   it('closed solid with positive volume = length x width x depth', () => {
     const pts = resample([[0, 0], [30, 0], [30, 20]], 2);
     const m = ribbonSolid(pts, pts.map(() => 10), 1.5, 2);
@@ -410,7 +416,7 @@ describe('LOD2-fit roofs', () => {
     const bld = building('1', [sq(1040, 2040, 1060, 2050)], 0, 9);
     const site: SiteData = {
       bbox: { minE: 1000, minN: 2000, maxE: 1120, maxN: 2100 }, origin: [1060, 2050], dtm, dsm,
-      buildings: [bld], lines: [], areas: [], trees: [], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
+      buildings: [bld], lines: [], areas: [], trees: [], points: [], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
     };
     const sc = await buildScene(site, { ...DEFAULT_SETTINGS, buildings: 'lod2fit', trees: 'off' });
     expect(sc.notes.join(' ')).toMatch(/LOD2-fit: 1 roof parts \(1 gable/);
@@ -474,12 +480,12 @@ describe('scene', () => {
       line('wall1', 'wall', [[1020, 2030], [1060, 2030]], { barrier: 'wall' }),
     ],
     areas: [{ id: 'park', kind: 'green', rings: [sq(1070, 2035, 1110, 2060)], tags: {} }],
-    trees: [[1030, 2035]], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
+    trees: [[1030, 2035]], points: [], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
   };
   it('builds one named layer per feature class, with closed solids', async () => {
     const scene = await buildScene(site, { ...DEFAULT_SETTINGS, buildings: 'lod15', maxTris: 100_000 });
     const layers = scene.objects.map((o) => o.layer).sort();
-    expect(layers).toEqual(['bridges', 'buildings', 'paths', 'roads', 'terrain', 'trees', 'walls', 'water', 'green'].sort());
+    expect(layers).toEqual(['bridges', 'buildings', 'markings', 'paths', 'roads', 'terrain', 'trees', 'walls', 'water', 'green'].sort());
     for (const o of scene.objects) {
       if (o.layer === 'terrain') continue;
       for (const [name, s, c] of o.mesh.parts!) {

@@ -1,9 +1,10 @@
 import { bufferLines, unionPolygons, type Polygon } from './buffer';
 import { buildContext, type Context } from './context';
-import { drapeSurface, mergeMeshes, rasterizePolygons, solidWithMirrorFloor, triCount } from './geom';
+import { drapeSurface, mergeMeshes, rasterizePolygons, solidWithFlatFloor, solidWithMirrorFloor, triCount } from './geom';
 import { buildingsMesh, stepForTriangles, terrainGrid, terrainMesh, type Mesh, type TerrainGrid } from './mesh';
 import { adaptiveTerrain } from './rtin';
 import { polylineLength, resample, ribbonSolid } from './ribbon';
+import { buildMarkings } from './markings';
 import { fitRoofParts } from './roofparts';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh, roofRaster } from './roofs';
 import { detectTrees, treesMesh, type Tree } from './trees';
@@ -12,7 +13,7 @@ import type { Building, Raster, SiteData } from '../types';
 // ------------------------------------------------------------------ layers
 
 export type LayerId =
-  | 'terrain' | 'buildings' | 'details' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
+  | 'terrain' | 'buildings' | 'details' | 'markings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
 
 export interface LayerDef {
   id: LayerId;
@@ -29,6 +30,7 @@ export const MODEL_LAYERS: LayerDef[] = [
   { id: 'buildings', label: 'Buildings', cad: 'BUILDINGS', color: '#f4f1ea' },
   { id: 'details', label: 'Chimneys & parapets', cad: 'ROOF-DETAIL', color: '#cfc7b8' },
   { id: 'roads', label: 'Roads', cad: 'ROADS', color: '#8f8b82' },
+  { id: 'markings', label: 'Road markings', cad: 'ROAD-MARKINGS', color: '#f6f6f2' },
   { id: 'paths', label: 'Paths', cad: 'PATHS', color: '#c9b48e' },
   { id: 'rail', label: 'Railways', cad: 'RAIL', color: '#6b625a' },
   { id: 'water', label: 'Rivers & water', cad: 'WATER', color: '#6fa3d6' },
@@ -74,6 +76,8 @@ export interface ModelSettings {
   trees: 'off' | 'osm' | 'lidar';
   /** LOD2-fit only: model chimneys and parapets as separate objects. */
   roofDetails: boolean;
+  /** Road markings from OSM tags (centre/lane lines, zebras, cycle lanes, stop lines, double yellows). */
+  markings: boolean;
   /** Thickness of roads/paths/rail/green above the terrain, in mm at print scale. */
   reliefMm: number;
   /** How far rivers are carved below the banks, in mm at print scale (0 = don't carve). */
@@ -86,7 +90,7 @@ export interface ModelSettings {
 
 export const DEFAULT_SETTINGS: ModelSettings = {
   scaleDen: 1000, terrainStep: 0, terrainTolerance: 0.1, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
-  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true,
+  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true, markings: true,
   reliefMm: 0.4, waterDepthMm: 1, featureStep: 0, featureSolids: true,
 };
 
@@ -165,7 +169,20 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   const original = depth ? terrainGrid(site.dtm, origin, { step: adaptive ? 1 : step }) : grid;
   let terrainSolid: (baseZ: number) => Mesh;
   let tolerance: number | undefined;
-  if (adaptive) {
+  if (site.shape) {
+    // Custom outline: drape the polygon over the terrain grid, so the mesh edge is the outline exactly.
+    const st = adaptive ? stepForTriangles(site.dtm, s.maxTris) : step;
+    const g2 = terrainGrid(raster, origin, { step: st });
+    const ring = site.shape.map(([e, n]) => [e - origin[0], n - origin[1]] as [number, number]);
+    const open = drapeSurface([[ring]], g2.lines(1), g2.zAt, 0).build();
+    const x0 = g2.xs[0], x1 = g2.xs[g2.nc - 1], y0 = g2.ys[g2.nr - 1], y1 = g2.ys[0];
+    const uvs = new Float32Array((open.positions.length / 3) * 2);
+    for (let i = 0; i < open.positions.length / 3; i++) { uvs[i * 2] = (open.positions[i * 3] - x0) / (x1 - x0); uvs[i * 2 + 1] = (open.positions[i * 3 + 1] - y0) / (y1 - y0); }
+    open.uvs = uvs;
+    add('terrain', open);
+    terrainSolid = (baseZ) => solidWithFlatFloor(open, baseZ);
+    if (adaptive) notes.push('Custom shape: terrain uses a uniform grid (adaptive terrain applies to rectangular sites).');
+  } else if (adaptive) {
     const at = adaptiveTerrain(raster, origin, { tolerance: s.terrainTolerance, maxTris: s.maxTris });
     tolerance = at.tolerance;
     add('terrain', at.mesh);
@@ -202,6 +219,20 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   if (s.roads && ctx.roads.length) { await progress('Roads…'); add('roads', pads('road', numbered(local(ctx.roads)), 1, relief)); }
   if (s.paths && ctx.paths.length) { await progress('Paths…'); add('paths', pads('path', numbered(local(ctx.paths)), 1, relief * 0.9)); }
   if (s.rail && ctx.rail.length) { await progress('Railways…'); add('rail', pads('rail', numbered(local(ctx.rail)), 1, relief * 1.2)); }
+  if (s.markings && s.roads) {
+    await progress('Road markings…');
+    const marks = buildMarkings(site);
+    if (marks.length) {
+      const g = lines(1);
+      const parts = marks.map((m, i) => {
+        const ring = m.ring.map(([e, n]) => [e - origin[0], n - origin[1]] as [number, number]);
+        const lift = relief + 0.06;
+        const surface = drapeSurface([[ring]], g, grid.zAt, lift).build();
+        return { name: `${m.kind}_${m.colour}_${i + 1}`, mesh: s.featureSolids ? solidWithMirrorFloor(surface, 0.06) : surface };
+      });
+      add('markings', mergeMeshes(parts));
+    }
+  }
   if (s.green) {
     await progress('Parks & woodland…');
     for (const [kind, lift] of [['green', 0.5], ['wood', 0.5], ['paved', 0.7]] as const) {

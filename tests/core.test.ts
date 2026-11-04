@@ -235,7 +235,7 @@ describe('OSM to LIDAR alignment', () => {
   it('turns courtyards cut by the site edge into notches, keeping blocks watertight', () => {
     const outer: [number, number][] = [[0, -5], [20, -5], [20, 10], [0, 10]];
     const hole: [number, number][] = [[5, -2], [15, -2], [15, 5], [5, 5]];
-    const r = shiftAndClip({ buildings: [{ id: 'r/1', rings: [outer, hole], tags: {} }], lines: [], areas: [], trees: [] }, [0, 0], { minE: -10, minN: 0, maxE: 30, maxN: 30 });
+    const r = shiftAndClip({ buildings: [{ id: 'r/1', rings: [outer, hole], tags: {} }], lines: [], areas: [], trees: [], points: [] }, [0, 0], { minE: -10, minN: 0, maxE: 30, maxN: 30 });
     expect(r.buildings[0].rings).toHaveLength(1);
     expect(Math.abs(signedArea(r.buildings[0].rings[0]))).toBeCloseTo(20 * 10 - 10 * 5);
     const m = buildingsMesh([{ ...r.buildings[0], ground: 0, top: 5, source: 'lidar' }], [0, 0], 0);

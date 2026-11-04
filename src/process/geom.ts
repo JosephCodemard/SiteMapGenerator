@@ -110,6 +110,42 @@ export function boundaryLoops(idx: ArrayLike<number>): number[][] {
  * Triangulate closed vertex loops (outer loops CCW with positive area, holes CW) seen from above.
  * Returns CCW triangles as vertex ids into `p` (flat xyz positions).
  */
+/**
+ * Ear-clip one CCW loop using *every* vertex (collinear ones included) and never emitting zero-area triangles,
+ * so a floor stays welded to walls that were built from the same boundary. Returns null if it gets stuck.
+ */
+export function earClipLoop(loop: number[], p: ArrayLike<number>): number[] | null {
+  const idx = [...loop];
+  const out: number[] = [];
+  const X = (v: number) => p[v * 3], Y = (v: number) => p[v * 3 + 1];
+  const cross = (a: number, b: number, c: number) => (X(b) - X(a)) * (Y(c) - Y(a)) - (Y(b) - Y(a)) * (X(c) - X(a));
+  const blocked = (a: number, b: number, c: number) => {
+    for (const q of idx) {
+      if (q === a || q === b || q === c) continue;
+      if ((X(q) === X(a) && Y(q) === Y(a)) || (X(q) === X(b) && Y(q) === Y(b)) || (X(q) === X(c) && Y(q) === Y(c))) continue;
+      // Inside or on the closed triangle.
+      if (cross(a, b, q) >= -1e-9 && cross(b, c, q) >= -1e-9 && cross(c, a, q) >= -1e-9) return true;
+    }
+    return false;
+  };
+  let i = 0, fails = 0;
+  while (idx.length > 3) {
+    const n = idx.length;
+    const a = idx[(i + n - 1) % n], b = idx[i % n], c = idx[(i + 1) % n];
+    if (cross(a, b, c) > 1e-9 && !blocked(a, b, c)) {
+      out.push(a, b, c);
+      idx.splice(i % n, 1);
+      fails = 0;
+    } else {
+      i++;
+      if (++fails > n) return null;
+    }
+    if (i >= idx.length) i = 0;
+  }
+  if (cross(idx[0], idx[1], idx[2]) > 1e-9) out.push(idx[0], idx[1], idx[2]);
+  return out;
+}
+
 export function triangulateLoops(loops: number[][], p: ArrayLike<number>): number[] {
   const rings = loops.map((l) => ({ l, ring: l.map((v) => [p[v * 3], p[v * 3 + 1]] as XY) }));
   const outers = rings.filter((r) => signedArea(r.ring) > 0);
@@ -117,6 +153,10 @@ export function triangulateLoops(loops: number[][], p: ArrayLike<number>): numbe
   const out: number[] = [];
   for (const o of outers) {
     const mine = holes.filter((h) => pointInRings(h.ring[0][0], h.ring[0][1], [o.ring]));
+    if (!mine.length) {
+      const clipped = earClipLoop(o.l, p);
+      if (clipped && clipped.length === (o.l.length - 2) * 3 - 0) { out.push(...clipped); continue; }
+    }
     const flat: number[] = [];
     const ids: number[] = [];
     const holeStarts: number[] = [];
@@ -306,7 +346,7 @@ export function drapeSurface(polys: Ring[][], g: GridLines, zAt: (x: number, y: 
           if (!l || l[0] !== q[0] || l[1] !== q[1]) sp.push(q);
         }
         if (sp.length > 1 && sp[0][0] === sp[sp.length - 1][0] && sp[0][1] === sp[sp.length - 1][1]) sp.pop();
-        if (sp.length < 3 || polygonArea(sp) < 1e-6) return;
+        if (sp.length < 3 || polygonArea(sp) < 1e-9) return; // only exactly-degenerate pieces: dropping real slivers leaves holes
         const ids = sp.map(([x, y]) => mb.vertex(x, y, zAt(x, y) + lift));
         earClipConvex(sp, ids, mb);
       });

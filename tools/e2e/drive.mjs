@@ -22,6 +22,11 @@ await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/1-map.png` });
 console.log('bbox', await page.evaluate(() => ['minE', 'minN', 'maxE', 'maxN'].map((k) => document.getElementById(k).value).join(' ')));
 if (osmFile) await page.setInputFiles('#osmFile', osmFile);
+if (process.env.SHAPE === 'hexagon') {
+  // Same handler the map's hexagon tool calls.
+  await page.evaluate(() => { const [x0, y0, x1, y1] = ['minE', 'minN', 'maxE', 'maxN'].map((k) => +document.getElementById(k).value); const c = [(x0 + x1) / 2, (y0 + y1) / 2], r = 190; window.setShape(Array.from({ length: 6 }, (_, i) => [c[0] + r * Math.cos(i * Math.PI / 3), c[1] + r * Math.sin(i * Math.PI / 3)])); });
+  console.log('shape', await page.textContent('#areaInfo'));
+}
 
 await page.evaluate(() => document.querySelectorAll('details').forEach((d) => (d.open = true)));
 const idle = () => page.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 600000 });

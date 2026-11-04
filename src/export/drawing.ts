@@ -1,7 +1,9 @@
 import { buildContext } from '../process/context';
 import type { ContourLine } from '../process/contours';
 import { roofLines } from '../process/roofs';
+import { clipPolylineToShape, pointInShape } from '../process/shape';
 import { offsetOutline, resample } from '../process/ribbon';
+import { buildMarkings } from '../process/markings';
 import type { Tree } from '../process/trees';
 import type { BBox, Ring, SiteData, XY } from '../types';
 
@@ -37,6 +39,8 @@ export interface DrawingFeatures {
   green: boolean;
   bridges: boolean;
   walls: boolean;
+  /** Road markings and entrances. */
+  markings: boolean;
   /** Trees to draw at crown radius (none = no trees). */
   trees: Tree[];
   /** Ridge and hip lines for buildings that have a fitted roof. */
@@ -44,7 +48,7 @@ export interface DrawingFeatures {
 }
 
 export const ALL_FEATURES: DrawingFeatures = {
-  buildings: true, roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: [], roofs: true,
+  buildings: true, roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, markings: true, trees: [], roofs: true,
 };
 
 export interface DrawingOptions {
@@ -66,11 +70,16 @@ export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
   { name: 'ROAD-SURFACE', label: 'Roads (kerb lines)', stroke: '#333333', aci: 251, weight: 0.25, fill: '#ebebeb' },
   { name: 'ROAD-MINOR', label: 'Minor road centrelines', stroke: '#777777', aci: 9, weight: 0.13, dash: '3 1' },
   { name: 'ROAD-MAJOR', label: 'Major road centrelines', stroke: '#555555', aci: 8, weight: 0.18, dash: '3 1' },
+  { name: 'ROAD-MARK', label: 'Road markings (white)', stroke: '#8a8a8a', aci: 7, weight: 0.05, fill: '#ffffff' },
+  { name: 'ROAD-MARK-Y', label: 'Double yellow lines', stroke: '#c9a800', aci: 2, weight: 0.05, fill: '#f2d43a' },
+  { name: 'ROAD-MARK-CYCLE', label: 'Cycle lanes', stroke: '#b03030', aci: 1, weight: 0.05, fill: '#e8a0a0' },
+  { name: 'ENTRANCE', label: 'Building entrances', stroke: '#d0342c', aci: 1, weight: 0.18 },
   { name: 'RAIL', label: 'Railways', stroke: '#000000', aci: 7, weight: 0.35, fill: '#e2dfdb' },
   { name: 'RAIL-CL', label: 'Railway centrelines', stroke: '#000000', aci: 7, weight: 0.25, dash: '3 1' },
   { name: 'BRIDGE', label: 'Bridges', stroke: '#d0342c', aci: 1, weight: 0.5, fill: '#f6d9d6' },
   { name: 'WALL', label: 'Walls & fences', stroke: '#6b5a44', aci: 30, weight: 0.25 },
   { name: 'BUILDINGS', label: 'Building footprints', stroke: '#1a1a1a', aci: 7, weight: 0.35, fill: '#d9d4cc' },
+  { name: 'LISTED', label: 'Listed buildings (Historic England)', stroke: '#7b2d8e', aci: 200, weight: 0.5, fill: '#ead7f2' },
   { name: 'ROOF', label: 'Roof ridges & hips', stroke: '#555555', aci: 8, weight: 0.18 },
   { name: 'BLDG-LABEL', label: 'Building heights', stroke: '#444444', aci: 8, weight: 0.13 },
   { name: 'TREES', label: 'Trees', stroke: '#4f8a3c', aci: 96, weight: 0.18 },
@@ -86,7 +95,7 @@ export function defaultLayerToggles(): Record<string, boolean> {
 
 /** Which drawing layers belong to each feature switch (so one checkbox controls model and drawing). */
 export const FEATURE_LAYERS: Record<string, string[]> = {
-  roads: ['ROAD-SURFACE', 'ROAD-MINOR', 'ROAD-MAJOR'],
+  roads: ['ROAD-SURFACE', 'ROAD-MINOR', 'ROAD-MAJOR', 'ROAD-MARK', 'ROAD-MARK-Y', 'ROAD-MARK-CYCLE'],
   paths: ['PATH'],
   rail: ['RAIL', 'RAIL-CL'],
   water: ['WATER', 'WATERWAY'],
@@ -94,7 +103,7 @@ export const FEATURE_LAYERS: Record<string, string[]> = {
   bridges: ['BRIDGE'],
   walls: ['WALL'],
   trees: ['TREES'],
-  buildings: ['BUILDINGS', 'ROOF', 'BLDG-LABEL'],
+  buildings: ['BUILDINGS', 'LISTED', 'ROOF', 'BLDG-LABEL'],
 };
 
 const LINE_LAYER: Record<string, string> = {
@@ -123,6 +132,10 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
     }
     for (const a of site.areas) if (a.kind === 'bridge') add('BRIDGE', { t: 'poly', rings: a.rings });
   }
+  if (f.markings && f.roads) {
+    for (const m of buildMarkings(site)) add(m.colour === 'yellow' ? 'ROAD-MARK-Y' : m.colour === 'red' ? 'ROAD-MARK-CYCLE' : 'ROAD-MARK', { t: 'poly', rings: [m.ring] });
+  }
+  if (f.buildings) for (const q of site.points) if (q.kind === 'entrance') add('ENTRANCE', { t: 'circle', c: q.p, r: 0.6 });
   if (f.walls) for (const w of ctx.walls) add('WALL', { t: 'line', pts: w.coords });
   // Centrelines (off by default) so CAD users can still pick them up; tunnels stay dashed.
   for (const l of site.lines) {
@@ -137,8 +150,9 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
     } else add(layer, { t: 'line', pts: l.coords });
   }
   for (const c of contours) {
-    add(c.major ? 'CONTOUR-MAJOR' : 'CONTOUR-MINOR', { t: 'line', pts: c.closed ? [...c.coords, c.coords[0]] : c.coords, z: c.level });
-    if (c.major && c.coords.length > 8) {
+    const pts = c.closed ? [...c.coords, c.coords[0]] : c.coords;
+    for (const part of site.shape ? clipPolylineToShape(pts, site.shape) : [pts]) add(c.major ? 'CONTOUR-MAJOR' : 'CONTOUR-MINOR', { t: 'line', pts: part, z: c.level });
+    if (c.major && c.coords.length > 8 && (!site.shape || pointInShape(c.coords[Math.floor(c.coords.length / 2)], site.shape))) {
       const k = Math.floor(c.coords.length / 2);
       const [p, q] = [c.coords[k], c.coords[k + 1]];
       let angle = (Math.atan2(q[1] - p[1], q[0] - p[0]) * 180) / Math.PI;
@@ -150,6 +164,7 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
   if (f.buildings) {
     for (const b of site.buildings) {
       add('BUILDINGS', { t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground });
+      if (b.listed) add('LISTED', { t: 'poly', rings: b.rings, z: b.ground });
       if (f.roofs) {
         for (const fit of b.roofParts ?? (b.roof ? [b.roof] : [])) {
           if (fit.type === 'flat') continue;
@@ -166,7 +181,7 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
   }
   for (const t of f.trees) add('TREES', { t: 'tree', c: t.p, r: t.r });
   const { minE, minN, maxE, maxN } = site.bbox;
-  add('BOUNDARY', { t: 'line', pts: [[minE, minN], [maxE, minN], [maxE, maxN], [minE, maxN], [minE, minN]] });
+  add('BOUNDARY', { t: 'line', pts: site.shape ? [...site.shape, site.shape[0]] : [[minE, minN], [maxE, minN], [maxE, maxN], [minE, maxN], [minE, minN]] });
 
   return [...layers.values()].filter((l) => opts.layers[l.name] !== false && l.items.length);
 }
@@ -185,6 +200,8 @@ export interface SheetOptions {
   underlay?: string;
   /** Draw title strip, scale bar and north arrow. */
   furniture: boolean;
+  /** Custom site outline: the drawing is clipped to it. */
+  shape?: Ring;
 }
 
 const MARGIN = 10; // mm
@@ -206,7 +223,9 @@ export function writeSvg(layers: Layer[], bbox: BBox, s: SheetOptions): string {
       `width="${W.toFixed(2)}mm" height="${H.toFixed(2)}mm" viewBox="0 0 ${W.toFixed(2)} ${H.toFixed(2)}" ` +
       `font-family="Helvetica, Arial, sans-serif">`,
     `<rect width="100%" height="100%" fill="#ffffff"/>`,
-    `<clipPath id="site"><rect x="${m}" y="${m}" width="${wMap.toFixed(2)}" height="${hMap.toFixed(2)}"/></clipPath>`,
+    `<clipPath id="site">${s.shape
+      ? `<path d="${path(s.shape, true)}"/>`
+      : `<rect x="${m}" y="${m}" width="${wMap.toFixed(2)}" height="${hMap.toFixed(2)}"/>`}</clipPath>`,
   ];
   if (s.underlay) {
     out.push(`<g inkscape:groupmode="layer" inkscape:label="HILLSHADE" id="HILLSHADE" opacity="0.45">` +
