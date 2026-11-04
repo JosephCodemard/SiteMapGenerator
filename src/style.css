@@ -93,3 +93,16 @@ a { color: #c0005b; }
 .sections label { flex-direction: row; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; }
 .sections label:has(input:checked) { background: #eef3ff; }
 .sections button { padding: 0 6px; margin-left: auto; }
+
+/* ---- building panel, hints, help ---- */
+#bldPanel { position: absolute; left: 10px; top: 10px; width: 270px; background: #fffffff2; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; box-shadow: 0 2px 8px #0002; font-size: 12px; }
+#bldPanel h4 { margin: 0 0 4px; font-size: 13px; }
+#bldPanel table { width: 100%; border-collapse: collapse; }
+#bldPanel td { padding: 1px 4px 1px 0; vertical-align: top; }
+#bldPanel td:first-child { color: #666; white-space: nowrap; }
+#bldPanel .row { margin-top: 6px; }
+.viewhint { position: absolute; left: 10px; bottom: 8px; font-size: 11px; color: #555; background: #fffc; padding: 2px 6px; border-radius: 4px; pointer-events: none; }
+dialog { border: none; border-radius: 8px; box-shadow: 0 8px 40px #0006; max-width: 520px; padding: 18px 22px; }
+dialog::backdrop { background: #0005; }
+dialog h2 { margin: 0 0 8px; } dialog h3 { margin: 12px 0 4px; font-size: 13px; }
+kbd { background: #eee; border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; font-size: 11px; }

@@ -12,6 +12,8 @@ export class Viewer3D {
   private model = new THREE.Group();
   private layers = new Map<LayerId, THREE.Object3D[]>();
   private zMin = 0;
+  private home = { cx: 0, cy: 0, r: 100, zMin: 0, zMax: 10 };
+  private raycaster = new THREE.Raycaster();
   private resizeObserver: ResizeObserver;
 
   constructor(private el: HTMLElement) {
@@ -64,6 +66,7 @@ export class Viewer3D {
         color: isTerrain && tex ? '#ffffff' : def.color, map: isTerrain ? tex : null, flatShading: !isTerrain,
       });
       const mesh = new THREE.Mesh(geom, mat);
+      mesh.userData = { layer: o.layer, parts: o.mesh.parts };
       this.model.add(mesh);
       const list: THREE.Object3D[] = [mesh];
       if ((o.layer === 'buildings' || o.layer === 'bridges') && o.mesh.indices.length < 4_000_000) {
@@ -84,13 +87,43 @@ export class Viewer3D {
     const centre = new THREE.Vector3();
     bounds.getCenter(centre);
     const r = Math.max(size.x, size.y);
-    this.controls.target.set(centre.x, centre.y, bounds.min.z);
-    this.camera.position.set(centre.x - r * 0.6, centre.y - r * 0.9, bounds.max.z + r * 0.7);
+    this.home = { cx: centre.x, cy: centre.y, r, zMin: bounds.min.z, zMax: bounds.max.z };
+    this.setView('iso');
     this.camera.near = r / 1000;
     this.camera.far = r * 20;
     this.camera.updateProjectionMatrix();
     this.resize();
   }
+
+  /** Camera presets: isometric, plan (top), south elevation, or re-fit. */
+  setView(kind: 'iso' | 'top' | 'south' | 'east') {
+    const { cx, cy, r, zMin, zMax } = this.home;
+    this.controls.target.set(cx, cy, zMin);
+    const p = {
+      iso: [cx - r * 0.6, cy - r * 0.9, zMax + r * 0.7], top: [cx, cy - 0.001 * r, zMax + r * 1.6],
+      south: [cx, cy - r * 1.6, zMin + (zMax - zMin) / 2 + r * 0.1], east: [cx + r * 1.6, cy, zMin + (zMax - zMin) / 2 + r * 0.1],
+    }[kind];
+    this.camera.position.set(p[0], p[1], p[2]);
+    this.camera.near = r / 1000;
+    this.camera.far = r * 20;
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+  }
+
+  /** The object under a screen point: its layer and the name of the part (building, tree, ...). */
+  pick(clientX: number, clientY: number): { layer: LayerId; part: string; point: THREE.Vector3 } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.raycaster.setFromCamera(new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1), this.camera);
+    const meshes = this.model.children.filter((c): c is THREE.Mesh => (c as THREE.Mesh).isMesh && c.visible && c.userData.layer !== 'terrain');
+    const hit = this.raycaster.intersectObjects(meshes, false)[0];
+    if (!hit || hit.faceIndex == null) return null;
+    const t = hit.faceIndex * 3;
+    const parts = hit.object.userData.parts as [string, number, number][] | undefined;
+    const part = parts?.find(([, s, c]) => t >= s && t < s + c)?.[0];
+    return part ? { layer: hit.object.userData.layer as LayerId, part, point: hit.point } : null;
+  }
+
+  get canvas() { return this.renderer.domElement; }
 
   setExaggeration(z: number) {
     // Scale about the lowest point so the model stays on the ground plane.

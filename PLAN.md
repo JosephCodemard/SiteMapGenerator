@@ -276,4 +276,7 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 | M5 GLB, 3MF, Rhino 3DM | **done**, verified by reading back (trimesh, rhino3dm) |
 | M5 manifold-3d union and fuse | **done**: 289 Pulteney buildings unioned and fused into one STL body (1 non-manifold edge in 98 k after float32 rounding) |
 | M5 procedural facades | **done**, tested; listing-text parsing not done |
-| M6 | not started |
+| M6 shareable links, one-click packs, building click panel + height overrides, keyboard shortcuts/help, imagery import (GeoTIFF / world file), friendlier errors, undo | **done**, verified against the production build |
+| M6 Svelte migration | **not done, by decision**: see HANDOFF §7g |
+| M6 scene build in a Web Worker | **not done**: analyses are in a worker; the scene holds closures (`zAt`, `terrainSolid`) that would need a redesign to cross the thread boundary |
+| M6 vegetation index / marking refinement from imagery | **not done** (imagery is used for underlays and textures only) |

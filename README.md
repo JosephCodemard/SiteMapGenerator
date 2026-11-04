@@ -57,6 +57,15 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
 
+## Using the app (UI features)
+
+- **Four numbered steps** (Site, Data, Model, Analysis, Export) with collapsible panels; quick-start presets (Presentation, 3D print, CAD context, Terrain only); live triangle estimates; a per-layer legend in the 3D view.
+- **One-click packs** (Export): *Planning drawings* (PDF pack + R2000 DXF + SVG), *CAD context model* (3DM + 3D DXF + 2D DXF + `buildings.csv`), *3D print* (STL + 3MF), *Laser cut* — each a single zip with a README.
+- **Click a building** in the 3D view for its data (OSM id, name, address, storeys, levels, height source, roof, listing) and to **override its height** (saved in your browser per site; press *Update model*). 3D shortcuts: `T` plan, `I` isometric, `S` south, `E` east, `?` help.
+- **Copy link** reopens the same site, custom shape, red line, section lines and settings (state lives in the URL hash; no server).
+- **Your own imagery** (Data step): GeoTIFF (BNG, lat/lon or Web Mercator) or JPG/PNG + world file → underlay for drawings and/or texture for the 3D terrain; the licence note you enter is written into sheets and README files.
+- **Undo** for site shapes, settings remembered per browser, friendlier error messages with suggested fixes.
+
 ## More 3D formats, booleans and facades
 
 - **GLB** (glTF 2.0 binary, Y-up, metres): a node per layer, a child node per building/tree/bridge, a material per layer. **3MF**: one coloured object per layer in mm at your model scale (slicers keep names and colours). **Rhino 3DM**: Rhino layers with colours, one named mesh object per building/tree/…, building **user text** (OSM id, heights, levels, roof types, listing), origin and CRS in document strings; the 2.5 MB WASM loads only when you export. Verified by reading each file back (trimesh for GLB/3MF, rhino3dm for 3DM).

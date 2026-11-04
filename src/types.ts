@@ -57,7 +57,7 @@ export interface ListedInfo {
   name: string;
 }
 
-export type HeightSource = 'lidar' | 'osm-height' | 'osm-levels' | 'default';
+export type HeightSource = 'lidar' | 'osm-height' | 'osm-levels' | 'default' | 'override';
 
 /** Fitted roof shape for LOD1.5: a flat block, or a gable / hip over the footprint's oriented box. */
 export interface RoofFit {

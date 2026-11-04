@@ -81,11 +81,44 @@ await page.screenshot({ path: `${out}/3-drawing.png` });
 
 const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportGlb', 'export3mf', 'export3dm', 'exportSvg', 'exportPng', 'exportDxf', 'exportPdf', 'secSvg', 'secDxf', 'exportLaser', 'exportData'];
 for (const id of exports) {
+  { const st = await page.evaluate(() => ({ busyHidden: document.getElementById('busy').hidden, disabled: document.querySelectorAll('button:disabled').length, helpOpen: document.getElementById('helpDlg').open })); if (st.disabled || !st.busyHidden || st.helpOpen) console.log('STATE before', id, JSON.stringify(st), (await page.textContent('#log')).trim().split('\n').slice(-2).join(' || ')); }
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click(`#${id}`)]);
   const p = `${out}/${dl.suggestedFilename()}`;
   await dl.saveAs(p);
   console.log('download', id, dl.suggestedFilename());
   await idle();
+}
+// UI platform: share link, building picking + height override, imagery, a pack.
+{
+  const imgDir = process.env.IMG_DIR;
+  if (imgDir) {
+    await page.setInputFiles('#imgFile', [`${imgDir}/ortho.png`, `${imgDir}/ortho.pgw`]);
+    await page.waitForTimeout(1500);
+    console.log('imagery:', (await page.textContent('#imgStatus')).slice(0, 120));
+  }
+  await page.click('#copyLink');
+  const hash = await page.evaluate(() => location.hash);
+  console.log('share hash length', hash.length);
+  globalThis.__hash = hash;
+  await page.click('#rebuild'); await idle();
+  await page.click('[data-tab="model"]');
+  await page.waitForTimeout(800);
+  const box = await page.locator('#view-model canvas').boundingBox();
+  let picked = false;
+  for (let gy = 0.3; gy < 0.9 && !picked; gy += 0.07) for (let gx = 0.25; gx < 0.8 && !picked; gx += 0.07) {
+    await page.mouse.click(box.x + box.width * gx, box.y + box.height * gy);
+    picked = await page.evaluate(() => !document.getElementById('bldPanel').hidden);
+  }
+  console.log('building picked', picked);
+  if (picked) {
+    console.log('panel:', (await page.innerText('#bldPanel')).replace(/\s+/g, ' ').slice(0, 160));
+    await page.fill('#ovH', '33'); await page.click('#ovApply'); await page.click('#rebuild'); await idle();
+    console.log('override applied; heights from override:', await page.evaluate(() => window.getSite().buildings.filter((b) => b.source === 'override').map((b) => (b.top - b.ground).toFixed(1))));
+  }
+  await page.keyboard.press('t'); await page.waitForTimeout(500);
+  await page.screenshot({ path: `${out}/5-topview.png`, timeout: 120000 });
+  const [pz] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('[data-pack="planning"]')]);
+  await pz.saveAs(`${out}/${pz.suggestedFilename()}`); console.log('download pack', pz.suggestedFilename()); await idle();
 }
 // Manifold options: union buildings and fuse into one STL solid.
 await page.check('#solidUnion'); await page.check('#stlFuse');
@@ -116,6 +149,12 @@ console.log('download analysis data', adl.suggestedFilename());
 await page.selectOption('#structure', 'combined');
 const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#exportObj')]);
 await dl.saveAs(`${out}/combined_${dl.suggestedFilename()}`);
+// Reopen the shared link in this same page (fresh load).
+await page.goto('about:blank');
+await page.goto(url + globalThis.__hash);
+await page.waitForFunction(() => document.getElementById('minE').value !== '', null, { timeout: 120000 });
+await page.waitForTimeout(1500);
+console.log('reopened bbox', await page.evaluate(() => ['minE', 'minN', 'maxE', 'maxN'].map((k) => document.getElementById(k).value).join(' ')), '| log:', (await page.textContent('#log')).trim().split('\n').pop());
 console.log('--- app log\n' + await page.textContent('#log'));
 console.log('--- summary\n' + (await page.innerText('#summary')));
 console.log('--- legend\n' + (await page.innerText('#legend')));

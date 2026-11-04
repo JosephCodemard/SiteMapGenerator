@@ -28,6 +28,8 @@ import { writeThreeMf } from './export/threemf';
 import { fuse, unionParts } from './process/solidify';
 import { writeStl } from './export/stl';
 import { initAnalysis } from './ui/analysis';
+import { decodeState, encodeState, friendlyError } from './ui/state';
+import { loadImagery, type Imagery } from './data/imagery';
 import { AreaMap } from './view/map';
 import { Viewer3D } from './view/viewer3d';
 import { bboxOf, clipPolygonToShape, normaliseShape, polygonArea } from './process/shape';
@@ -70,6 +72,8 @@ const MODEL_PRESETS: Record<string, Record<string, string | boolean>> = {
 let bbox: BBox;
 let shape: Ring | null = null;
 let redLine: Ring | null = null;
+let imagery: Imagery | null = null;
+const overrides = new Map<string, number>();
 let sections: { id: number; label: string; a: XY; b: XY }[] = [];
 let activeSection = 0;
 const shapeHistory: { bbox: BBox; shape: Ring | null }[] = [];
@@ -92,8 +96,11 @@ function log(msg: string) {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+let busyDepth = 0;
+
 async function busy<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
   const b = $('busy');
+  busyDepth++;
   b.hidden = false;
   b.textContent = `${label}…`;
   document.querySelectorAll('button').forEach((x) => (x.disabled = true));
@@ -106,11 +113,13 @@ async function busy<T>(label: string, fn: () => Promise<T>): Promise<T | undefin
     return result;
   } catch (e) {
     console.error(e);
-    log(`✖ ${label} failed: ${e instanceof Error ? e.message : String(e)}`);
+    log(`✖ ${friendlyError(label, e instanceof Error ? e.message : String(e))}`);
     return undefined;
   } finally {
-    b.hidden = true;
-    document.querySelectorAll('button').forEach((x) => (x.disabled = false));
+    if (--busyDepth === 0) {
+      b.hidden = true;
+      document.querySelectorAll('button').forEach((x) => (x.disabled = false));
+    }
   }
 }
 
@@ -120,8 +129,12 @@ async function stage(msg: string) {
   await tick();
 }
 
+/** While a pack is being made, downloads are collected instead of saved. */
+let collector: { name: string; blob: Blob }[] | null = null;
+
 function download(name: string, data: BlobPart | Blob, type = 'application/octet-stream') {
   const blob = data instanceof Blob ? data : new Blob([data], { type });
+  if (collector) { collector.push({ name, blob }); log(`+ ${name} (${(blob.size / 1e6).toFixed(1)} MB)`); return; }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -144,6 +157,7 @@ function readme(extra: string): string {
     `OSM features shifted ${site.osmOffset[0].toFixed(2)} m E, ${site.osmOffset[1].toFixed(2)} m N to match LIDAR roofs.`,
     `Fetched: ${site.fetchedAt}`,
     extra,
+    ...(imagery ? [`Imagery supplied by the user (${imagery.name}, ~${imagery.sourceRes.toFixed(2)} m/pixel): ${imagery.licence || 'licence not stated'}`] : []),
     ...(layers.length ? ['', 'Layers:', ...layers] : []),
     '',
     'Sources & licences:',
@@ -285,6 +299,7 @@ async function fetchData() {
     fetchSite(bbox, { dsm: checked('useDsm'), osm: checked('useOsm'), align: checked('alignOsm'), heights: heightOptions(), osmData, shape: shape ?? undefined }, log));
   if (!result) return;
   ({ site, inputs } = result);
+  loadOverrides();
   scene = null;
   if (checked('useListed') && site.buildings.length) {
     try {
@@ -361,19 +376,23 @@ async function rebuildModel() {
     await stage('Heights…');
     const listed = new Map(s.buildings.filter((b) => b.listed).map((b) => [b.id, b.listed!]));
     s.buildings = buildingHeights(inputs!.footprints, s.dtm, s.dsm, heightOptions());
-    for (const b of s.buildings) b.listed = listed.get(b.id);
+    for (const b of s.buildings) {
+      b.listed = listed.get(b.id);
+      const h = overrides.get(b.id);
+      if (h) { b.top = b.ground + h; b.source = 'override'; }
+    }
     if (settings.buildings === 'lod2' && s.buildings.length > 1500) {
       log(`LOD2 roofs for ${s.buildings.length} buildings can take a minute — raise “LIDAR-roof detail” to 2 m to speed it up.`);
     }
     scene = await buildScene(s, settings, stage);
     for (const n of scene.notes) log(n);
-    texture = null;
-    if (checked('drape')) {
+    texture = imagery && checked('imgTexture') ? imagery.canvas : null;
+    if (!texture && checked('drape')) {
       await stage('Plan texture…');
       const layers = buildDrawing(s, [], { layers: defaultLayerToggles(), buildingLabels: false });
       texture = await textureCanvas(layers, s.bbox, Math.min(4096, Math.max(1024, (s.bbox.maxE - s.bbox.minE) * 2)));
     }
-    viewer ??= new Viewer3D($('view-model'));
+    if (!viewer) { viewer = new Viewer3D($('view-model')); wirePicking(viewer); }
     $('view-model').querySelector('.empty')?.remove();
     viewer.setScene(scene, texture);
     viewer.setExaggeration(num('exag'));
@@ -611,7 +630,7 @@ function titleBlock(title: string, suffix = '') {
 }
 
 function sheetSpec(scale: number, title: string, suffix = '') {
-  return { paper: sel('paper') as Paper | 'auto', scale, block: titleBlock(title, suffix), legend: checked('sheetLegend'), grid: checked('sheetGrid'), notes: [`Heights in metres above ODN. Coordinates: British National Grid.`] };
+  return { paper: sel('paper') as Paper | 'auto', scale, block: titleBlock(title, suffix), legend: checked('sheetLegend'), grid: checked('sheetGrid'), notes: [`Heights in metres above ODN. Coordinates: British National Grid.`, ...(imagery ? [`Imagery: ${imagery.licence || imagery.name}`] : [])] };
 }
 
 /** One plan sheet (SVG at paper size). The location plan defaults to 1:1250, and any plan falls back to a scale that fits. */
@@ -624,7 +643,7 @@ function planSheet(type: DrawType) {
   const fit = fitScale(ew, eh, paper === 'auto' ? 'A0' : paper);
   if (scale < fit) { log(`${title}: 1:${scale} doesn't fit ${paper === 'auto' ? 'A0' : paper}; using 1:${fit}.`); scale = fit; }
   const r = writeSheet(drawingLayers(type), s.bbox, sheetSpec(scale, title), {
-    underlay: checked('hillshade') ? hillshadeDataUrl() : undefined, shape: s.shape,
+    underlay: imagery && checked('imgUnderlay') ? imagery.canvas.toDataURL('image/jpeg', 0.85) : checked('hillshade') ? hillshadeDataUrl() : undefined, shape: s.shape,
   });
   $('sheetInfo').textContent = `${title}: ${r.layout.paper} ${r.layout.landscape ? 'landscape' : 'portrait'} at 1:${scale}${r.layout.fits ? '' : ' — does not fit: raise the scale'}`;
   return { ...r, scale, title };
@@ -794,6 +813,136 @@ async function exportData() {
   });
 }
 
+
+// ---------------------------------------------------------------- imagery, picking, packs, links, shortcuts
+$('imgFile').onchange = async () => {
+  const files = Array.from(($('imgFile') as HTMLInputElement).files ?? []);
+  if (!files.length) return;
+  await busy('Loading imagery', async () => {
+    try {
+      imagery = await loadImagery(files, bbox, $('imgLicence').value.trim());
+      $('imgStatus').textContent = `${imagery.name}: ~${imagery.sourceRes.toFixed(2)} m/pixel. ${imagery.note ?? ''} Rebuild the model to texture the terrain.`;
+      log(`Imagery loaded (${imagery.name}). ${imagery.note ?? ''}`);
+      if (scene) markStale();
+    } catch (e) {
+      imagery = null;
+      $('imgStatus').textContent = '';
+      log(`✖ ${e instanceof Error ? e.message : e}`);
+    }
+  });
+};
+
+const safeId = (id: string) => id.replace(/[^\w#-]/g, '_');
+const ovKey = () => `ukdtm.ov.${bbox.minE},${bbox.minN},${bbox.maxE},${bbox.maxN}`;
+function loadOverrides() {
+  overrides.clear();
+  try { for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem(ovKey()) ?? '{}') as Record<string, number>)) overrides.set(k, v); } catch { /* ignore */ }
+}
+function saveOverrides() {
+  try { localStorage.setItem(ovKey(), JSON.stringify(Object.fromEntries(overrides))); } catch { /* ignore */ }
+}
+
+function showBuilding(part: string | null) {
+  const panel = $('bldPanel');
+  if (!part || !site) { panel.hidden = true; return; }
+  const b = site.buildings.find((q) => `building_${safeId(q.id)}` === part) ?? site.buildings.find((q) => part.startsWith(`building_${safeId(q.id)}_`));
+  if (!b) { panel.hidden = true; return; }
+  const rows: [string, string][] = [
+    ['OSM id', b.id], ['Name', b.tags.name ?? '–'], ['Address', [b.tags['addr:housenumber'], b.tags['addr:street']].filter(Boolean).join(' ') || '–'],
+    ['Storeys', b.tags['building:levels'] ?? '–'], ['Ground', `${b.ground.toFixed(2)} m ODN`], ['Top', `${b.top.toFixed(2)} m ODN`],
+    ['Height', `${(b.top - b.ground).toFixed(1)} m (${b.source})`],
+    ['Roof', (b.roofParts ?? (b.roof ? [b.roof] : [])).map((r) => r.type).join(' + ') || 'flat block'],
+    ['Listed', b.listed ? `Grade ${b.listed.grade} · ${b.listed.name}` : '–'],
+  ];
+  panel.innerHTML = `<h4>Building</h4><table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v.replace(/</g, '&lt;')}</td></tr>`).join('')}</table>` +
+    `<div class="row"><input id="ovH" type="number" step="0.5" min="2" placeholder="override height (m)" value="${overrides.get(b.id) ?? ''}" />` +
+    `<button id="ovApply">Apply</button><button id="ovClear" title="Back to the LIDAR height">Reset</button></div>`;
+  panel.hidden = false;
+  const apply = (h: number | null) => { h ? overrides.set(b.id, h) : overrides.delete(b.id); saveOverrides(); markStale(); log(h ? `Height of ${b.id} set to ${h} m — press “Update model”.` : `Height of ${b.id} reset — press “Update model”.`); };
+  ($('ovApply') as HTMLElement).onclick = () => apply(Number($('ovH').value) || null);
+  ($('ovClear') as HTMLElement).onclick = () => apply(null);
+}
+
+function wirePicking(v: Viewer3D) {
+  let down: [number, number] | null = null;
+  v.canvas.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
+  v.canvas.addEventListener('pointerup', (e) => {
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+    const hit = v.pick(e.clientX, e.clientY);
+    showBuilding(hit?.layer === 'buildings' ? hit.part : null);
+  });
+}
+
+/** Packs: run the individual exports with downloads collected, then save one zip with a README. */
+const PACKS: Record<string, { title: string; run: () => Promise<void>; about: string }> = {
+  planning: { title: 'planning-drawings', about: 'Multi-page PDF (location plan if a red line is drawn, site plan, roof plan, sections), R2000 DXF with layers/lineweights/attributes, and the site plan as SVG.', run: async () => { await exportPdf(); await exportDxf(); await exportSvg(); } },
+  cad: { title: 'cad-context-model', about: 'Rhino 3DM (layers, named objects, user text), AutoCAD polyface-mesh DXF, the 2D DXF drawing, and buildings.csv.', run: async () => { await export3dm(); await exportDxf3d(); await exportDxf(); if (site) download('buildings.csv', buildingAttributesCsv(site), 'text/csv'); } },
+  print: { title: '3d-print', about: 'Per-layer STL (closed solids, mm at your model scale) and a coloured 3MF.', run: async () => { await exportStl(); await export3mf(); } },
+  laser: { title: 'laser-cut', about: 'Contour-stack DXF in millimetres at model scale.', run: async () => { await exportLaser(); } },
+};
+
+async function runPack(kind: string) {
+  const pack = PACKS[kind];
+  if (!site || !pack) return;
+  collector = [];
+  try {
+    await busy(`Building ${pack.title} pack`, pack.run);
+  } finally {
+    const files = collector;
+    collector = null;
+    if (files.length) {
+      const entries: Record<string, Uint8Array> = {};
+      for (const f of files) entries[f.name] = await blobBytes(f.blob);
+      entries['README.txt'] = strToU8(readme(`Pack: ${pack.title}\n${pack.about}\n\nFiles:\n${files.map((f) => `- ${f.name}`).join('\n')}`));
+      download(`site_${stamp()}_${pack.title}.zip`, new Blob([zip(entries, 0) as BlobPart]));
+    } else log('The pack produced no files — see the messages above.');
+  }
+}
+document.querySelectorAll<HTMLElement>('[data-pack]').forEach((b) => (b.onclick = () => runPack(b.dataset.pack!)));
+
+function shareState() {
+  const settings: Record<string, string | boolean> = {};
+  document.querySelectorAll<HTMLInputElement>('[data-persist]').forEach((el) => { settings[el.id] = el.type === 'checkbox' ? el.checked : el.value; });
+  return { v: 1 as const, bbox, shape, redLine, cuts: sections.map((q) => ({ a: q.a, b: q.b })), settings };
+}
+
+$('copyLink').onclick = async () => {
+  const hash = encodeState(shareState());
+  history.replaceState(null, '', hash);
+  try { await navigator.clipboard.writeText(location.href); log('Link copied: it reopens this site, shape, sections and settings.'); }
+  catch { log(`Link (copy it from the address bar): ${location.href}`); }
+};
+
+/** Reopen a shared site: settings first, then geometry. */
+function restoreShare(): boolean {
+  const st = decodeState(location.hash);
+  if (!st) return false;
+  for (const [id, v] of Object.entries(st.settings)) {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el?.hasAttribute('data-persist')) { if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v); }
+  }
+  shape = st.shape ?? null;
+  setBBox(st.bbox, false, true);
+  areaMap.fitArea(st.bbox);
+  if (st.redLine) { redLine = st.redLine; areaMap.setRedLine(st.redLine); }
+  sections = (st.cuts ?? []).map((c, i) => ({ id: i + 1, label: String.fromCharCode(65 + (i % 26)), a: c.a, b: c.b }));
+  activeSection = sections[0]?.id ?? 0;
+  renderSections();
+  areaMap.setCuts(sections);
+  log('Opened a shared site. Press “Fetch & align data” to load it.');
+  return true;
+}
+
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) || e.ctrlKey || e.metaKey) return;
+  const k = e.key.toLowerCase();
+  if (k === '?' || k === 'h') { ($('helpDlg') as unknown as HTMLDialogElement).showModal(); return; }
+  const views: Record<string, 'iso' | 'top' | 'south' | 'east'> = { i: 'iso', t: 'top', s: 'south', e: 'east' };
+  if (views[k] && viewer) { selectTab('model'); viewer.setView(views[k]); }
+});
+$('helpBtn').onclick = () => ($('helpDlg') as unknown as HTMLDialogElement).showModal();
+
 // ---------------------------------------------------------------- UI wiring
 function selectTab(name: string) {
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', (b as HTMLElement).dataset.tab === name));
@@ -806,6 +955,7 @@ const areaMap = new AreaMap($('view-map'), [start.lon, start.lat]);
 areaMap.onChange = () => { /* shape tools report through onShape */ };
 
 areaMap.map.on('load', () => {
+  if (restoreShare()) { loadOverrides(); return; }
   const [e, n] = toBNG(start.lon, start.lat);
   setBBox(centred(e, n, start.size));
 });

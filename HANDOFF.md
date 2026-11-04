@@ -2,7 +2,7 @@
 
 _Status as of 2026-11-04. Iteration 1 (sections 1–6) was committed first; **iteration 2 (phases B and C, plus the UI rework) is described in section 7** and is committed on `main`._
 
-_Remaining next steps (section 8): A (reliability, mostly open), D (drawings), E (imagery), F (booleans/formats), G (UI framework/workers), H. B and C are done except the items listed in section 7.4._
+_Iteration 3 (PLAN.md milestones M1–M6) is done: see sections 7b–7g. What remains is listed in section 8 and in 7g's "not done" list._
 
 ## 1. Goal and context
 
@@ -264,6 +264,15 @@ Not verified: opening the R2000 DXF in real AutoCAD/Rhino (ezdxf only); PDF rend
 `export/{gltf,threemf,rhino}.ts`, `process/{solidify,facades}.ts`, export UI for GLB/3MF/3DM + union/fuse options, facade layers. manifold-3d and rhino3dm are dynamically imported and their `.wasm` files are loaded with `?url` imports in the browser (vite bundles them); in Node (vitest) they load directly.
 Build gotcha: `rhino3dm`'s default entry pulls in Node modules (`ws`, `fs`) and breaks `vite build`; the browser path imports `rhino3dm/rhino3dm.module.js`, tests use the CommonJS entry via a runtime specifier. Always run `npm run build` and, ideally, `tools/e2e/drive.mjs` against `vite preview` (production bundle), not just the dev server.
 Known: a fused STL can contain an inverted shell for an enclosed courtyard void (legitimate); facade windows on slopes use the building's lowest ground level, so uphill windows can sit slightly into the ground.
+
+## 7g. Iteration 3, milestone M6 (2026-11-04)
+
+Done: `ui/state.ts` (share links, friendly errors), `data/imagery.ts`, viewer picking/views, packs via a download collector (`collector` in `main.ts`: exports call `download()`, which stores instead of saving while a pack runs), building override panel, nested-safe `busy()` (depth counter), help dialog, shortcuts.
+**Deliberately not done, and why:**
+- *Svelte migration.* The UI is ~600 lines of imperative TypeScript in `main.ts` plus `ui/analysis.ts`; `process/`, `export/`, `analysis/` and `data/` are framework-free and unaffected. A migration would rewrite working, e2e-verified UI for no user-visible gain in this iteration and risks regressions. The sensible time is when UI state (settings, sections, results) needs reactive sharing between many components. Until then keep adding modules under `src/ui/` like `analysis.ts`.
+- *Scene build in a worker.* `Scene` carries closures (`terrainSolid`, `grid.zAt`) and big typed arrays; moving it needs a message-based redesign (return meshes + a sampler id). Analyses already run in a worker. The main thread is blocked for a few seconds on large sites during model builds.
+- *Imagery-based vegetation index and marking snapping:* imagery is display/texture only.
+Test harness notes: software WebGL is flaky under load (screenshots time out when stale Chromium processes are running: `pkill -f chromium`); a second page in the same context may never initialise the map, so test link reopening by reloading the same page.
 
 ## 8. Next steps
 

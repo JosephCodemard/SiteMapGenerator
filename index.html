@@ -32,6 +32,7 @@
         </div>
         <label class="inline"><input type="checkbox" id="lidarOverlay" /> LIDAR hillshade</label>
         <div id="shapeHelp" class="hint">Rectangle: drag corner to corner.</div>
+        <div class="row"><button id="copyLink" title="A link that reopens this site and these settings">Copy link to this site</button><button id="helpBtn" title="Shortcuts and tips">?</button></div>
         <div id="areaInfo" class="hint"></div>
         <details class="sub">
           <summary>Exact coordinates (British National Grid)</summary>
@@ -57,6 +58,15 @@
           <summary>Overpass busy? Use your own OSM file</summary>
           <p class="hint">Run your query in <a href="https://overpass-turbo.eu" target="_blank" rel="noopener">overpass-turbo.eu</a> (Export → raw OSM data as JSON), save it, and choose it here before fetching.</p>
           <input type="file" id="osmFile" accept=".json,.geojson,application/json" />
+        </details>
+        <details class="sub">
+          <summary>Your own imagery (optional)</summary>
+          <p class="hint">No open, keyless aerial photo service exists, so bring your own georeferenced image you are licensed to use: a GeoTIFF (BNG, lat/lon or Web Mercator) or a JPG/PNG with its world file.</p>
+          <input type="file" id="imgFile" multiple accept=".tif,.tiff,.jpg,.jpeg,.png,.jgw,.pgw,.wld" />
+          <label>Licence / source note (kept in exports)<input id="imgLicence" placeholder="e.g. © client, OS licence no. …" data-persist /></label>
+          <label class="inline"><input type="checkbox" id="imgUnderlay" checked /> Underlay for drawings</label>
+          <label class="inline"><input type="checkbox" id="imgTexture" checked /> Texture for the 3D terrain</label>
+          <div id="imgStatus" class="hint"></div>
         </details>
         <button id="fetch" class="primary">Fetch &amp; align data</button>
         <div id="summary" class="hint"></div>
@@ -267,6 +277,13 @@
     <details class="step needs-data" open>
       <summary><span class="num">5</span> Export</summary>
       <div class="body">
+        <h3>One-click packs <span class="hint">— a single zip with a README</span></h3>
+        <div class="grid2 buttons">
+          <button data-pack="planning" title="PDF drawing pack + R2000 DXF + site plan SVG">Planning drawings</button>
+          <button data-pack="cad" title="Rhino 3DM + 3D DXF + 2D DXF + building attributes">CAD context model</button>
+          <button data-pack="print" title="STL layers + 3MF at your model scale">3D print</button>
+          <button data-pack="laser" title="Laser-cut contour stack DXF in mm">Laser cut</button>
+        </div>
         <h3>3D model <span class="hint">— every layer is a separate object</span></h3>
         <div class="grid2">
           <label>File structure
@@ -418,10 +435,31 @@
     <div id="view-model" class="view">
       <div class="empty">Fetch data to see the 3D model.</div>
       <div id="legend" hidden></div>
+      <div id="bldPanel" hidden></div>
+      <div id="viewHint" class="viewhint">Click a building for details · T top · I iso · S south · E east · ? help</div>
     </div>
     <div id="view-analysis" class="view"><div class="empty">Choose an analysis and press “Run analysis”.</div><div id="anLegend" hidden></div></div>
     <div id="view-drawing" class="view"><div class="empty">Fetch data, then “Preview drawing”.</div></div>
   </main>
+  <dialog id="helpDlg">
+    <h2>Quick guide</h2>
+    <ol>
+      <li><b>Site</b>: search a postcode, pick a preset, or draw a rectangle, hexagon, circle or polygon.</li>
+      <li><b>Data</b>: <i>Fetch &amp; align</i>. If OpenStreetMap is busy, load your own file.</li>
+      <li><b>Model</b>: choose features and detail; try a quick-start preset. Watch the triangle count.</li>
+      <li><b>Analysis</b>: shadows, wind, flooding, crime, footfall. Indicative screening tools.</li>
+      <li><b>Export</b>: one-click packs, or individual formats and drawings.</li>
+    </ol>
+    <h3>3D view shortcuts</h3>
+    <p><kbd>T</kbd> plan · <kbd>I</kbd> isometric · <kbd>S</kbd> south elevation · <kbd>E</kbd> east elevation · click a building for its data and to override its height · <kbd>?</kbd> this guide</p>
+    <h3>Good to know</h3>
+    <ul>
+      <li>Heights are metres above Ordnance Datum (ODN); coordinates are British National Grid.</li>
+      <li>Facades, road markings and analyses are generated from open data and models: check them before relying on them.</li>
+      <li>Your settings are remembered in this browser; <i>Copy link</i> shares the site and settings.</li>
+    </ul>
+    <form method="dialog"><button class="primary">Close</button></form>
+  </dialog>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
