@@ -603,3 +603,93 @@ describe('scene', () => {
     expect(mergeMeshes([]).indices.length).toBe(0);
   });
 });
+
+import { buildSection, sectionLayers, DEFAULT_SECTION } from '../src/process/section';
+import { writeSheet, layoutSheet, fitScale, DEFAULT_BLOCK } from '../src/export/sheet';
+import { writeDxf2000 } from '../src/export/dxf2000';
+import { restyle, snapWeight, layerName } from '../src/export/layers';
+
+describe('section / elevation profiles', () => {
+  // Ground rises 0.1 m per metre going east; an 8 m deep, 10 m wide gable house at x 40..50, y -4..4 (ridge along x), a house beyond, a tree, a river.
+  const W = 140, H = 80;
+  const dtm = raster(W, H, (x) => 20 + 0.1 * x);
+  const house = (id: string, x0: number, y0: number, w: number, d: number): Building => ({
+    id, rings: [sq(1000 + x0, 2040 + y0, 1000 + x0 + w, 2040 + y0 + d)], tags: {}, ground: 20 + 0.1 * x0, top: 30 + 0.1 * x0, source: 'lidar',
+  });
+  const cutHouse = house('cut', 40, -4, 10, 8);
+  cutHouse.roofParts = [{ type: 'gable', eaves: 28, ridge: 31, centre: [1045, 2040], axis: [1, 0], a: 5, b: 4, rmse: 0.2 }];
+  const site: SiteData = {
+    bbox: { minE: 1000, minN: 2000, maxE: 1140, maxN: 2080 }, origin: [1070, 2040], dtm, dsm: null,
+    buildings: [cutHouse, house('beyond', 80, 12, 12, 8), house('far', 100, 70, 10, 10), house('behind', 100, -20, 10, 10)],
+    lines: [], areas: [{ id: 'river', kind: 'water', rings: [sq(1100, 2030, 1110, 2050)], tags: {} }], trees: [], points: [], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
+  };
+  // Line runs along y = 2040 from x = 1010 to 1130, looking north (left of travel).
+  const A: [number, number] = [1010, 2040], B: [number, number] = [1130, 2040];
+
+  it('profiles the ground, cuts the house with its roof shape, and shows beyond/tree/water', () => {
+    const tree = { p: [1065, 2046] as [number, number], h: 9, r: 3, source: 'osm' as const };
+    const s = buildSection(site, [tree, { ...tree, p: [1065, 2000] }], A, B, DEFAULT_SECTION);
+    expect(s.length).toBeCloseTo(120, 6);
+    // Ground follows z = 20 + 0.1 x (x measured from the raster edge): at chainage 0 (x = 10) it is 21.
+    expect(s.ground[0][1]).toBeCloseTo(21, 1);
+    expect(s.ground[s.ground.length - 1][1]).toBeCloseTo(33, 1);
+    expect(s.cuts).toHaveLength(1);
+    expect(s.cuts[0].t0).toBeCloseTo(30, 6); expect(s.cuts[0].t1).toBeCloseTo(40, 6);
+    // The cut runs across the gable's short axis? The ridge runs along x, so the cut follows the ridge: constant 31 at mid-width.
+    expect(Math.max(...s.cuts[0].top.map((q) => q[1]))).toBeCloseTo(31, 1);
+    expect(s.beyond.map((b) => b.id)).toEqual(['beyond']); // 'far' is 70 m away, beyond the 60 m depth
+    expect(s.trees).toHaveLength(1); // the second tree is on the wrong side
+    expect(s.water).toHaveLength(1);
+    expect(s.water[0].t1 - s.water[0].t0).toBeCloseTo(10, 1); // water outlines are grown 1 cm by the union
+    expect(s.zmax).toBeGreaterThanOrEqual(31);
+  });
+  it('elevation mode draws every building on the viewing side, none cut', () => {
+    const s = buildSection(site, [], A, B, { ...DEFAULT_SECTION, mode: 'elevation', depth: 200 });
+    expect(s.cuts).toHaveLength(0);
+    expect(s.beyond.map((b) => b.id).sort()).toEqual(['beyond', 'cut', 'far']);
+    expect(s.beyond[0].dist).toBeGreaterThan(s.beyond[s.beyond.length - 1].dist); // far first
+  });
+  it('becomes layers with exaggerated levels that go through the SVG sheet and R2000 DXF', () => {
+    const s = buildSection(site, [], A, B, { ...DEFAULT_SECTION, exaggeration: 2 });
+    const { layers, bbox } = sectionLayers(s, { ...DEFAULT_SECTION, exaggeration: 2 });
+    expect(layers.map((l) => l.name)).toEqual(['SECTION-BEYOND', 'SECTION-GROUND', 'SECTION-WATER', 'SECTION-CUT', 'SECTION-ANNO']);
+    expect(bbox.maxE).toBeCloseTo(120, 6);
+    const ground = layers[1].items.find((i) => i.t === 'line') as { pts: [number, number][] };
+    expect(ground.pts[0][1]).toBeCloseTo(42, 0); // 21 m x exaggeration 2
+    const { svg } = writeSheet(layers, bbox, { paper: 'auto', scale: 500, block: { ...DEFAULT_BLOCK, title: 'Section A-A' }, legend: true, grid: false });
+    expect(svg).toContain('Section A-A');
+    expect(svg).toContain('SECTION-CUT');
+    expect(writeDxf2000(restyle(layers, 'ncs'), bbox, { origin: [0, 0], scale: 500 })).toContain('A-SECT-CUT');
+  });
+});
+
+describe('sheets and CAD standards', () => {
+  it('chooses the smallest paper that fits, switches orientation, and warns when nothing fits', () => {
+    expect(layoutSheet(100, 80, { paper: 'auto', scale: 500 }).paper).toBe('A4');
+    const l = layoutSheet(400, 400, { paper: 'auto', scale: 1000 });
+    expect(['A3', 'A2']).toContain(l.paper);
+    expect(l.fits).toBe(true);
+    expect(layoutSheet(300, 100, { paper: 'auto', scale: 500 }).landscape).toBe(true);
+    expect(layoutSheet(3000, 3000, { paper: 'A0', scale: 500 }).fits).toBe(false);
+    expect(fitScale(2000, 2000, 'A1')).toBeGreaterThanOrEqual(2500);
+  });
+  it('the title block, legend, grid ticks and scale bar are generated', () => {
+    const layers = [{ name: 'BUILDINGS', label: 'Building footprints', stroke: '#000', aci: 7, weight: 0.35, fill: '#ddd', items: [{ t: 'poly' as const, rings: [sq(1010, 2010, 1030, 2020)] }] }];
+    const { svg, layout } = writeSheet(layers, { minE: 1000, minN: 2000, maxE: 1100, maxN: 2080 }, {
+      paper: 'auto', scale: 500, block: { ...DEFAULT_BLOCK, project: 'Bath study', title: 'Site location plan', number: 'SLP-01', drawnBy: 'JC' }, legend: true, grid: true,
+    });
+    for (const t of ['Bath study', 'Site location plan', 'SLP-01', '1:500 @ A4', 'Building footprints', 'Key', 'First issue', 'Drawn by']) expect(svg, t).toContain(t);
+    expect(svg).toMatch(/<text[^>]*>1050<\/text>/); // BNG tick label
+    expect(svg).toContain(`width="${layout.w}mm"`);
+  });
+  it('layer schemes rename, merge duplicates, add a prefix and snap lines to ISO 128 weights', () => {
+    expect(layerName('ROAD-SURFACE', 'ncs')).toBe('C-ROAD-KERB');
+    expect(layerName('ROAD-SURFACE', 'simple', 'ab_')).toBe('AB_ROAD-SURFACE');
+    expect(snapWeight(0.32)).toBe(0.35); expect(snapWeight(0.05)).toBe(0.13); expect(snapWeight(0.6)).toBe(0.5);
+    const mk = (name: string): never => ({ name, label: '', stroke: '#000', aci: 7, weight: 0.3, items: [{ t: 'line', pts: [[0, 0], [1, 1]] }] }) as never;
+    const out = restyle([mk('ROAD-MINOR'), mk('ROAD-MAJOR'), mk('WALL')], 'ncs');
+    expect(out.map((l) => l.name)).toEqual(['C-ROAD-CNTR', 'C-WALL']);
+    expect(out[0].items).toHaveLength(2);
+    expect(out[0].weight).toBe(0.25); // 0.3 mm snaps to the nearest ISO 128 pen
+  });
+});

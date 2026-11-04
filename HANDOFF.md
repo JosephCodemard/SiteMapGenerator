@@ -253,6 +253,12 @@ Verified: hexagonal site end to end in the browser (STL closure for terrain, bui
 Lessons: data.police.uk sometimes errors without CORS headers (rate limiting): `fetchCrimes` retries then skips a month and warns. The wind and footfall models are heuristics: calibrate against CFD/counts before trusting numbers; the UI says so.
 Not done: analysis results are not yet embedded in drawing sheets (M4), and the scene itself isn't built in a worker yet (M6).
 
+## 7e. Iteration 3, milestone M4 (2026-11-04)
+
+`export/{layers,dxf2000,sheet,pdf}.ts`, `process/section.ts`, drawing layers (REDLINE, SPOT-LEVEL, ROOF-PITCH, LISTED), map tools for red line and cut lines, `main.ts` drawing flow (`planSheet`, `sectionSheet`, `exportPdf`). `writeSvg` is now only used for the 3D ground texture; sheets come from `writeSheet`.
+Gotchas: `layerSvg` is shared by both writers; the DXF section uses chainage/level coordinates (not BNG); R2000 files need BLOCK_RECORD/handles for ezdxf and AutoCAD, so keep that structure when editing; jspdf/svg2pdf.js are dynamically imported (build splits them). Installing a dependency prunes `npm i --no-save playwright`: reinstall it before running `tools/e2e/drive.mjs`.
+Not verified: opening the R2000 DXF in real AutoCAD/Rhino (ezdxf only); PDF rendering in Acrobat.
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.

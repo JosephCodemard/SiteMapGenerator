@@ -211,6 +211,38 @@ export function initAnalysis(host: AnalysisHost) {
     };
   }
 
+  /** A3 sheet: 21 Mar / 21 Jun / 21 Dec at 09:00, 12:00 and 15:00 (UK time), one tile each. */
+  async function studySheet(site: SiteData) {
+    if (!site.dsm) throw new Error('Shadows need the LIDAR surface (DSM).');
+    const { lat, lon } = centre(site);
+    const dates = ['2026-03-21', '2026-06-21', '2026-12-21'], times = ['09:00', '12:00', '15:00'];
+    const tile = 700, gap = 20, head = 150, W = 3 * tile + 4 * gap, aspect = (site.bbox.maxN - site.bbox.minN) / (site.bbox.maxE - site.bbox.minE);
+    const th = Math.round(tile * aspect), H = head + 3 * (th + 60) + gap;
+    const sheet = document.createElement('canvas');
+    sheet.width = W; sheet.height = H;
+    const g = sheet.getContext('2d')!;
+    g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#000'; g.font = 'bold 54px sans-serif'; g.fillText('Shadow study', gap, 70);
+    g.font = '28px sans-serif'; g.fillText(`BNG E ${site.bbox.minE}–${site.bbox.maxE}, N ${site.bbox.minN}–${site.bbox.maxN} · UK clock time · sun from NOAA algorithm, shadows from the 1 m LIDAR surface (buildings, trees, terrain)`, gap, 115);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        await host.stage(`Shadow study ${r * 3 + c + 1}/9`);
+        const sun = sunPosition(londonToUtc(dates[c], times[r]), lat, lon);
+        const v = baseView(site, tile);
+        const { mask, raster } = await runTask('shadowAt', { dsm: site.dsm, azimuth: sun.azimuth, altitude: sun.altitude });
+        drawRaster(v, raster, (k) => (mask[k] ? 1 : NaN), [[0, [20, 30, 80]], [1, [20, 30, 80]]], 0.55);
+        drawBuildings(v, site, 'rgba(245,245,245,0.9)');
+        const x = gap + c * (tile + gap), y = head + r * (th + 60);
+        g.drawImage(v.canvas, x, y, tile, th);
+        g.strokeStyle = '#000'; g.lineWidth = 2; g.strokeRect(x, y, tile, th);
+        g.fillStyle = '#000'; g.font = 'bold 28px sans-serif';
+        g.fillText(`${new Date(`${dates[c]}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })} · ${times[r]}`, x, y + th + 34);
+        g.font = '22px sans-serif'; g.fillText(sun.altitude > 0 ? `sun ${sun.azimuth.toFixed(0)}° az, ${sun.altitude.toFixed(0)}° alt` : 'sun below horizon', x + tile - 280, y + th + 34);
+      }
+    }
+    return sheet;
+  }
+
   const types: Record<string, (s: SiteData) => Promise<AnalysisResult>> = { shadow, wind, flood, crime, footfall: footfallRun };
   const sync = () => document.querySelectorAll<HTMLElement>('[data-an]').forEach((el) => (el.hidden = el.dataset.an !== $<HTMLSelectElement>('anType').value));
   $('anType').onchange = sync;
@@ -229,6 +261,20 @@ export function initAnalysis(host: AnalysisHost) {
       return out;
     });
     if (res) show(res);
+  };
+  $('anStudy').onclick = async () => {
+    const site = host.site();
+    if (!site) return;
+    const sheet = await host.busy('Shadow study sheet', () => studySheet(site));
+    if (!sheet) return;
+    const { jsPDF } = await import('jspdf');
+    const pdf = new jsPDF({ unit: 'mm', format: [420, 297 * (sheet.height / sheet.width) * (420 / 297)], orientation: 'landscape' });
+    const hMm = 420 * (sheet.height / sheet.width);
+    pdf.deletePage(1);
+    pdf.addPage([420, hMm], 'landscape');
+    pdf.addImage(sheet.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 420, hMm);
+    host.download('shadow_study.pdf', pdf.output('blob'), 'application/pdf');
+    show({ name: 'shadow_study', canvas: sheet, legend: '<b>Shadow study</b> · 21 Mar / Jun / Dec at 09:00, 12:00, 15:00', summary: 'Shadow study sheet saved as PDF.' });
   };
   $('anCancel').onclick = () => { cancelTasks(); host.log('Analysis cancelled.'); };
   $('anPng').onclick = () => {

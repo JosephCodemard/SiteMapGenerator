@@ -12,17 +12,22 @@ import {
   DEFAULT_SETTINGS, MODEL_LAYERS, buildScene, layerDef, treesFor, type ModelSettings, type Scene,
 } from './process/scene';
 import {
-  buildDrawing, canvasToPng, defaultLayerToggles, LAYER_DEFS, svgToCanvas, textureCanvas, writeSvg,
+  buildDrawing, canvasToPng, defaultLayerToggles, LAYER_DEFS, svgToCanvas, textureCanvas,
   type DrawingFeatures, type Layer,
 } from './export/drawing';
 import { writeContourStackDxf, writeDxf, writeDxfMesh } from './export/dxf';
+import { writeDxf2000 } from './export/dxf2000';
+import { restyle, type SchemeId } from './export/layers';
+import { svgsToPdf, type PdfPage } from './export/pdf';
+import { DEFAULT_BLOCK, fitScale, writeSheet, type Paper } from './export/sheet';
+import { buildSection, sectionLayers } from './process/section';
 import { writeObj } from './export/obj';
 import { writeStl } from './export/stl';
 import { initAnalysis } from './ui/analysis';
 import { AreaMap } from './view/map';
 import { Viewer3D } from './view/viewer3d';
-import { bboxOf, clipPolygonToShape, polygonArea } from './process/shape';
-import type { BBox, Ring, SiteData } from './types';
+import { bboxOf, clipPolygonToShape, normaliseShape, polygonArea } from './process/shape';
+import type { BBox, Ring, SiteData, XY } from './types';
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const num = (id: string) => Number($(id).value);
@@ -60,6 +65,9 @@ const MODEL_PRESETS: Record<string, Record<string, string | boolean>> = {
 // ---------------------------------------------------------------- state
 let bbox: BBox;
 let shape: Ring | null = null;
+let redLine: Ring | null = null;
+let sections: { id: number; label: string; a: XY; b: XY }[] = [];
+let activeSection = 0;
 const shapeHistory: { bbox: BBox; shape: Ring | null }[] = [];
 let site: SiteData | null = null;
 let inputs: SiteInputs | null = null;
@@ -487,9 +495,34 @@ function getContours(): ContourLine[] {
   return lines;
 }
 
-function drawingLayers(): Layer[] {
-  const contours = layerToggles['CONTOUR-MINOR'] || layerToggles['CONTOUR-MAJOR'] || layerToggles['CONTOUR-LABEL'] ? getContours() : [];
-  return buildDrawing(site!, contours, { layers: layerToggles, buildingLabels: layerToggles['BLDG-LABEL'], features: drawingFeatures() });
+type DrawType = 'site' | 'location' | 'roof';
+
+/** Layer visibility for the chosen drawing type (the Layers list is the base; types hide what they don't need). */
+function togglesFor(type: DrawType): Record<string, boolean> {
+  const t = { ...layerToggles };
+  if (type === 'location') {
+    for (const k of ['CONTOUR-MINOR', 'CONTOUR-MAJOR', 'CONTOUR-LABEL', 'SPOT-LEVEL', 'BLDG-LABEL', 'ROOF', 'ROOF-PITCH', 'TREES', 'ROAD-MARK', 'ROAD-MARK-Y', 'ROAD-MARK-CYCLE', 'ENTRANCE', 'BOUNDARY']) t[k] = false;
+  } else if (type === 'roof') {
+    for (const k of ['CONTOUR-MINOR', 'CONTOUR-MAJOR', 'CONTOUR-LABEL', 'SPOT-LEVEL', 'TREES', 'ROAD-MARK', 'ROAD-MARK-Y', 'ROAD-MARK-CYCLE', 'GREEN', 'WOOD', 'PAVED', 'PATH']) t[k] = false;
+    t.ROOF = true; t['ROOF-PITCH'] = true; t['BLDG-LABEL'] = true;
+  }
+  return t;
+}
+
+/** The red line for a location plan: the drawn polygon, else the site outline. */
+function effectiveRedLine(): Ring {
+  if (redLine) return redLine;
+  const b = site!.bbox;
+  return site!.shape ?? [[b.minE, b.minN], [b.maxE, b.minN], [b.maxE, b.maxN], [b.minE, b.maxN]];
+}
+
+function drawingLayers(type: DrawType = sel('drawType') as DrawType): Layer[] {
+  const toggles = togglesFor(type);
+  const contours = toggles['CONTOUR-MINOR'] || toggles['CONTOUR-MAJOR'] || toggles['CONTOUR-LABEL'] ? getContours() : [];
+  return buildDrawing(site!, contours, {
+    layers: toggles, buildingLabels: toggles['BLDG-LABEL'], features: drawingFeatures(),
+    redLine: type === 'location' ? effectiveRedLine() : redLine,
+  });
 }
 
 function hillshadeDataUrl(): string {
@@ -502,14 +535,47 @@ function hillshadeDataUrl(): string {
   return canvas.toDataURL('image/png');
 }
 
-function drawingSvg(): string {
-  return writeSvg(drawingLayers(), site!.bbox, {
-    scale: num('drawScale'),
-    title: `Site plan — E ${site!.bbox.minE}, N ${site!.bbox.minN}`,
-    underlay: checked('hillshade') ? hillshadeDataUrl() : undefined,
-    furniture: true,
-    shape: site!.shape,
+const TITLES: Record<DrawType, [string, string, number]> = {
+  site: ['Site plan', 'SP', 0], location: ['Site location plan', 'SLP', 1250], roof: ['Roof plan', 'RP', 0],
+};
+
+function titleBlock(title: string, suffix = '') {
+  return {
+    ...DEFAULT_BLOCK, project: $('tbProject').value, title: title + suffix, number: $('tbNumber').value, drawnBy: $('tbBy').value,
+    revision: $('tbRev').value, status: sel('tbStatus'),
+  };
+}
+
+function sheetSpec(scale: number, title: string, suffix = '') {
+  return { paper: sel('paper') as Paper | 'auto', scale, block: titleBlock(title, suffix), legend: checked('sheetLegend'), grid: checked('sheetGrid'), notes: [`Heights in metres above ODN. Coordinates: British National Grid.`] };
+}
+
+/** One plan sheet (SVG at paper size). The location plan defaults to 1:1250, and any plan falls back to a scale that fits. */
+function planSheet(type: DrawType) {
+  const s = site!;
+  const [title, , defScale] = TITLES[type];
+  let scale = type === 'site' || type === 'roof' ? num('drawScale') : defScale;
+  const ew = s.bbox.maxE - s.bbox.minE, eh = s.bbox.maxN - s.bbox.minN;
+  const paper = sel('paper') as Paper | 'auto';
+  const fit = fitScale(ew, eh, paper === 'auto' ? 'A0' : paper);
+  if (scale < fit) { log(`${title}: 1:${scale} doesn't fit ${paper === 'auto' ? 'A0' : paper}; using 1:${fit}.`); scale = fit; }
+  const r = writeSheet(drawingLayers(type), s.bbox, sheetSpec(scale, title), {
+    underlay: checked('hillshade') ? hillshadeDataUrl() : undefined, shape: s.shape,
   });
+  $('sheetInfo').textContent = `${title}: ${r.layout.paper} ${r.layout.landscape ? 'landscape' : 'portrait'} at 1:${scale}${r.layout.fits ? '' : ' — does not fit: raise the scale'}`;
+  return { ...r, scale, title };
+}
+
+/** Section / elevation sheet for one cut line. */
+function sectionSheet(sec: { label: string; a: XY; b: XY }) {
+  const s = site!;
+  const opt = { mode: sel('secMode') as 'section' | 'elevation', depth: num('secDepth'), exaggeration: num('secExag') || 1, spacing: 0.5, label: sec.label };
+  const data = buildSection(s, treesFor(s, readSettings().trees), sec.a, sec.b, opt);
+  const { layers, bbox } = sectionLayers(data, opt);
+  const scale = Math.max(100, fitScale(bbox.maxE - bbox.minE, (bbox.maxN - bbox.minN) / opt.exaggeration, (sel('paper') as Paper | 'auto') === 'auto' ? 'A3' : (sel('paper') as Paper)));
+  const name = opt.mode === 'section' ? `Section ${sec.label}–${sec.label}` : `Elevation ${sec.label}–${sec.label}`;
+  const r = writeSheet(layers, bbox, { ...sheetSpec(scale, name), grid: false, notes: [`Looking left of the line A→B. Vertical exaggeration ×${opt.exaggeration}.`, 'Levels in metres above ODN.'] });
+  return { ...r, layers, bbox, scale, name, data };
 }
 
 /** Drawings show building roof lines only after a model with fitted roofs has been built. */
@@ -523,7 +589,7 @@ async function previewDrawing() {
   if (!(await prepareDrawing())) return;
   await busy('Rendering drawing', async () => {
     const el = $('view-drawing');
-    el.innerHTML = drawingSvg();
+    el.innerHTML = planSheet(sel('drawType') as DrawType).svg;
     const svg = el.querySelector('svg')!;
     svg.style.width = 'min(96%, 1400px)';
     selectTab('drawing');
@@ -532,23 +598,93 @@ async function previewDrawing() {
 
 async function exportSvg() {
   if (!(await prepareDrawing())) return;
-  await busy('Exporting SVG', async () => download(`site_${stamp()}_1-${num('drawScale')}.svg`, drawingSvg(), 'image/svg+xml'));
+  const type = sel('drawType') as DrawType;
+  await busy('Exporting SVG', async () => {
+    const r = planSheet(type);
+    download(`site_${stamp()}_${type}_1-${r.scale}.svg`, r.svg, 'image/svg+xml');
+  });
 }
 
 async function exportPng() {
   if (!(await prepareDrawing())) return;
+  const type = sel('drawType') as DrawType;
   await busy('Exporting PNG', async () => {
-    const canvas = await svgToCanvas(drawingSvg(), { dpi: num('dpi') });
-    download(`site_${stamp()}_1-${num('drawScale')}_${num('dpi')}dpi.png`, await canvasToPng(canvas));
+    const r = planSheet(type);
+    const canvas = await svgToCanvas(r.svg, { dpi: num('dpi') });
+    download(`site_${stamp()}_${type}_1-${r.scale}_${num('dpi')}dpi.png`, await canvasToPng(canvas));
   });
+}
+
+/** DXF text for layers with the chosen version and layer standard. */
+function dxfFor(layers: Layer[], box: BBox, origin: XY, scale: number): string {
+  const styled = restyle(layers, sel('layerScheme') as SchemeId, $('layerPrefix').value.trim());
+  return sel('dxfFormat') === 'r2000' ? writeDxf2000(styled, box, { origin, scale }) : writeDxf(styled, box, { origin, scale });
 }
 
 async function exportDxf() {
   if (!(await prepareDrawing())) return;
   await busy('Exporting DXF', async () => {
     const local = sel('dxfOrigin') === 'local';
-    const dxf = writeDxf(drawingLayers(), site!.bbox, { origin: local ? site!.origin : [0, 0], scale: num('drawScale') });
-    download(`site_${stamp()}_${local ? 'local' : 'bng'}.dxf`, dxf, 'application/dxf');
+    const dxf = dxfFor(drawingLayers(), site!.bbox, local ? site!.origin : [0, 0], num('drawScale'));
+    download(`site_${stamp()}_${local ? 'local' : 'bng'}_${sel('dxfFormat')}.dxf`, dxf, 'application/dxf');
+  });
+}
+
+/** Multi-page PDF: location plan (if a red line exists), site plan, roof plan (if roofs were fitted), and every section. */
+async function exportPdf() {
+  if (!(await prepareDrawing())) return;
+  await busy('Building PDF pack', async () => {
+    const pages: PdfPage[] = [];
+    const push = (r: { svg: string; layout: { w: number; h: number } }) => pages.push({ svg: r.svg, w: r.layout.w, h: r.layout.h });
+    if (redLine) push(planSheet('location'));
+    push(planSheet('site'));
+    if (site!.buildings.some((b) => b.roofParts || b.roof)) push(planSheet('roof'));
+    for (const sec of sections) push(sectionSheet(sec));
+    await stage(`Writing ${pages.length} PDF page${pages.length > 1 ? 's' : ''}`);
+    download(`site_${stamp()}_drawings.pdf`, await svgsToPdf(pages), 'application/pdf');
+  });
+}
+
+// ---- section list
+function renderSections() {
+  const el = $('sectionList');
+  el.innerHTML = '';
+  sections.forEach((sec) => {
+    const lab = document.createElement('label');
+    lab.innerHTML = `<input type="radio" name="sec" ${sec.id === activeSection ? 'checked' : ''}/> ${sec.label}–${sec.label} <span class="hint">${Math.hypot(sec.b[0] - sec.a[0], sec.b[1] - sec.a[1]).toFixed(0)} m</span><button title="Remove">✕</button>`;
+    lab.querySelector('input')!.onchange = () => { activeSection = sec.id; };
+    lab.querySelector('button')!.onclick = (e) => { e.preventDefault(); sections = sections.filter((q) => q.id !== sec.id); renderSections(); areaMap.setCuts(sections); };
+    el.appendChild(lab);
+  });
+  if (!sections.find((q) => q.id === activeSection) && sections[0]) activeSection = sections[0].id;
+}
+
+const currentSection = () => sections.find((q) => q.id === activeSection);
+
+async function secPreview() {
+  const sec = currentSection();
+  if (!site || !sec) return log('Draw a cut line on the map first.');
+  await busy('Rendering section', async () => {
+    const el = $('view-drawing');
+    el.innerHTML = sectionSheet(sec).svg;
+    el.querySelector('svg')!.style.width = 'min(96%, 1400px)';
+    selectTab('drawing');
+  });
+}
+
+async function secSvg() {
+  const sec = currentSection();
+  if (!site || !sec) return log('Draw a cut line on the map first.');
+  await busy('Exporting section', async () => { const r = sectionSheet(sec); download(`site_${stamp()}_${r.name.replace(/\W+/g, '_')}.svg`, r.svg, 'image/svg+xml'); });
+}
+
+async function secDxf() {
+  const sec = currentSection();
+  if (!site || !sec) return log('Draw a cut line on the map first.');
+  await busy('Exporting section DXF', async () => {
+    const r = sectionSheet(sec);
+    // Chainage along X, level (x exaggeration) along Y, in metres.
+    download(`site_${stamp()}_${r.name.replace(/\W+/g, '_')}.dxf`, dxfFor(r.layers, r.bbox, [0, 0], r.scale), 'application/dxf');
   });
 }
 
@@ -675,6 +811,23 @@ $('previewDrawing').onclick = previewDrawing;
 $('exportSvg').onclick = exportSvg;
 $('exportPng').onclick = exportPng;
 $('exportDxf').onclick = exportDxf;
+$('exportPdf').onclick = exportPdf;
+$('drawRedLine').onclick = () => { selectTab('map'); areaMap.setTool('polygon', 'redline'); log('Red line: click each corner, double-click or Enter to finish.'); };
+$('clearRedLine').onclick = () => { redLine = null; areaMap.setRedLine(null); };
+areaMap.onRedLine = (ring) => { redLine = normaliseShape(ring); };
+$('drawCut').onclick = () => { selectTab('map'); areaMap.setTool('cut'); log('Cut line: click the start (A), then the end (B). The view looks to the left of A→B.'); };
+areaMap.onCut = (a, b) => {
+  const id = (sections.at(-1)?.id ?? 0) + 1;
+  const label = String.fromCharCode(64 + ((id - 1) % 26) + 1);
+  sections.push({ id, label, a, b });
+  activeSection = id;
+  renderSections();
+  areaMap.setCuts(sections);
+  log(`Cut line ${label}–${label} added (${Math.hypot(b[0] - a[0], b[1] - a[1]).toFixed(0)} m).`);
+};
+$('secPreview').onclick = secPreview;
+$('secSvg').onclick = secSvg;
+$('secDxf').onclick = secDxf;
 $('exportLaser').onclick = exportLaser;
 $('exportData').onclick = exportData;
 document.querySelectorAll<HTMLElement>('#tabs button').forEach((b) => (b.onclick = () => selectTab(b.dataset.tab!)));
@@ -703,4 +856,4 @@ initAnalysis({ site: () => site, log, busy, stage, selectTab, download });
 document.querySelectorAll('.needs-data').forEach((s) => s.classList.add('disabled'));
 updateMeshSummary();
 // Exposed for debugging in the console.
-Object.assign(window, { toBNG, toWGS, getSite: () => site, getScene: () => scene, setShape: (r: Ring) => areaMap.onShape(r, bboxOf(r)) });
+Object.assign(window, { toBNG, toWGS, getSite: () => site, getScene: () => scene, setShape: (r: Ring) => areaMap.onShape(r, bboxOf(r)), setRedLine: (r: Ring) => { areaMap.setRedLine(r); areaMap.onRedLine(r); }, addCut: (a: XY, b: XY) => areaMap.onCut(a, b) });

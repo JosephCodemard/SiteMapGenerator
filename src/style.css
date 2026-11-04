@@ -88,3 +88,8 @@ a { color: #c0005b; }
 #anLegend .cls { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
 #anLegend .cls i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
 [hidden] { display: none !important; }
+
+.sections { display: flex; flex-direction: column; gap: 2px; }
+.sections label { flex-direction: row; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; }
+.sections label:has(input:checked) { background: #eef3ff; }
+.sections button { padding: 0 6px; margin-left: auto; }

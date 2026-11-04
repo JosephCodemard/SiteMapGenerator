@@ -212,6 +212,7 @@
             <button data-date="2026-03-21">21 Mar</button><button data-date="2026-06-21">21 Jun</button>
             <button data-date="2026-09-21">21 Sep</button><button data-date="2026-12-21">21 Dec</button>
           </div>
+          <button id="anStudy" title="3 planning dates x 3 times on one A3 sheet">Shadow study sheet (PDF)</button>
           <p class="hint">Buildings, trees and terrain cast shadows (1 m LIDAR surface). BRE guidance looks for ≥ 2 h of sun on 21 March over half of an amenity space.</p>
         </div>
 
@@ -318,12 +319,55 @@
           </label>
           <label class="inline"><input type="checkbox" id="hillshade" data-persist /> Hillshade</label>
         </div>
+        <label>Drawing type
+          <select id="drawType" data-persist>
+            <option value="site">Site plan</option>
+            <option value="location">Site location plan (red line)</option>
+            <option value="roof">Roof plan</option>
+          </select>
+        </label>
+        <details class="sub">
+          <summary>Sheet &amp; title block</summary>
+          <div class="grid2">
+            <label>Paper<select id="paper" data-persist><option value="auto">Auto (smallest that fits)</option><option>A4</option><option>A3</option><option>A2</option><option>A1</option><option>A0</option></select></label>
+            <label>Revision<input id="tbRev" value="P01" data-persist /></label>
+            <label>Project<input id="tbProject" value="Site model" data-persist /></label>
+            <label>Drawing no.<input id="tbNumber" value="SP-001" data-persist /></label>
+            <label>Drawn by<input id="tbBy" data-persist /></label>
+            <label>Status<select id="tbStatus" data-persist><option>For information</option><option>For planning</option><option>For construction</option><option>Preliminary</option></select></label>
+          </div>
+          <label class="inline"><input type="checkbox" id="sheetLegend" checked data-persist /> Key (legend) from the layers drawn</label>
+          <label class="inline"><input type="checkbox" id="sheetGrid" checked data-persist /> BNG grid ticks</label>
+          <div id="sheetInfo" class="hint"></div>
+        </details>
+        <details class="sub">
+          <summary>Red line, sections &amp; elevations</summary>
+          <div class="row"><button id="drawRedLine">Draw red line</button><button id="clearRedLine">Clear</button></div>
+          <p class="hint">The red line is the planning boundary for the location plan (the site outline is used if none is drawn).</p>
+          <div class="grid3">
+            <label>View<select id="secMode" data-persist><option value="section">Section (cut)</option><option value="elevation">Elevation</option></select></label>
+            <label>Depth (m)<input id="secDepth" type="number" value="60" min="5" step="5" data-persist /></label>
+            <label>Exagg. ×<input id="secExag" type="number" value="2" min="1" max="10" step="0.5" data-persist /></label>
+          </div>
+          <button id="drawCut">Draw cut line on map (2 clicks)</button>
+          <div id="sectionList" class="sections"></div>
+          <div class="grid3 buttons"><button id="secPreview">Preview</button><button id="secSvg">SVG</button><button id="secDxf">DXF</button></div>
+        </details>
         <div class="grid2 buttons">
           <button id="previewDrawing">Preview drawing</button>
+          <button id="exportPdf" title="Location plan (if a red line is drawn), site plan, roof plan and all sections as a multi-page PDF">PDF pack</button>
           <button id="exportSvg">SVG</button>
           <button id="exportPng">PNG</button>
-          <button id="exportDxf" title="Layered 2D DXF: kerbs, buildings, trees as blocks, contours at elevation">DXF (AutoCAD/Rhino)</button>
+          <button id="exportDxf" title="Layered 2D DXF with the chosen layer standard">DXF (AutoCAD/Rhino)</button>
         </div>
+        <details class="sub">
+          <summary>CAD standards</summary>
+          <div class="grid2">
+            <label>DXF version<select id="dxfFormat" data-persist><option value="r2000">R2000 (hatches, lineweights, attributes)</option><option value="r12">R12 (widest compatibility)</option></select></label>
+            <label>Layer names<select id="layerScheme" data-persist><option value="simple">Simple</option><option value="ncs">NCS / AIA style</option></select></label>
+          </div>
+          <label>Layer prefix (e.g. project code)<input id="layerPrefix" placeholder="e.g. BATH-" data-persist /></label>
+        </details>
         <label>DXF coordinates (2D drawing and 3D mesh)
           <select id="dxfOrigin" data-persist><option value="bng">True BNG (overlays OS mapping)</option><option value="local">Local origin (same as OBJ)</option></select>
         </label>

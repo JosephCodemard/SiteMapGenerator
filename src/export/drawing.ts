@@ -4,6 +4,7 @@ import { roofLines } from '../process/roofs';
 import { clipPolylineToShape, pointInShape } from '../process/shape';
 import { offsetOutline, resample } from '../process/ribbon';
 import { buildMarkings } from '../process/markings';
+import { sample } from '../process/raster';
 import type { Tree } from '../process/trees';
 import type { BBox, Ring, SiteData, XY } from '../types';
 
@@ -23,7 +24,7 @@ export interface Layer {
 
 export type Item =
   | { t: 'line'; pts: Ring; z?: number; dashed?: boolean }
-  | { t: 'poly'; rings: Ring[]; z?: number; thickness?: number }
+  | { t: 'poly'; rings: Ring[]; z?: number; thickness?: number; /** Attached data (DXF XDATA): id, heights, roof, listing. */ attrs?: Record<string, string | number> }
   | { t: 'circle'; c: XY; r: number }
   /** A tree symbol at its true crown radius (a block INSERT in DXF). */
   | { t: 'tree'; c: XY; r: number }
@@ -55,6 +56,8 @@ export interface DrawingOptions {
   layers: Record<string, boolean>;
   buildingLabels: boolean;
   features?: DrawingFeatures;
+  /** Planning red-line boundary (BNG ring); drawn on its own layer. */
+  redLine?: Ring | null;
 }
 
 export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
@@ -79,6 +82,9 @@ export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
   { name: 'BRIDGE', label: 'Bridges', stroke: '#d0342c', aci: 1, weight: 0.5, fill: '#f6d9d6' },
   { name: 'WALL', label: 'Walls & fences', stroke: '#6b5a44', aci: 30, weight: 0.25 },
   { name: 'BUILDINGS', label: 'Building footprints', stroke: '#1a1a1a', aci: 7, weight: 0.35, fill: '#d9d4cc' },
+  { name: 'REDLINE', label: 'Red-line boundary', stroke: '#e00000', aci: 1, weight: 0.7 },
+  { name: 'SPOT-LEVEL', label: 'Spot levels (m ODN)', stroke: '#444444', aci: 8, weight: 0.13 },
+  { name: 'ROOF-PITCH', label: 'Roof pitches', stroke: '#555555', aci: 8, weight: 0.13 },
   { name: 'LISTED', label: 'Listed buildings (Historic England)', stroke: '#7b2d8e', aci: 200, weight: 0.5, fill: '#ead7f2' },
   { name: 'ROOF', label: 'Roof ridges & hips', stroke: '#555555', aci: 8, weight: 0.18 },
   { name: 'BLDG-LABEL', label: 'Building heights', stroke: '#444444', aci: 8, weight: 0.13 },
@@ -87,7 +93,7 @@ export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
 ];
 
 /** Layers that start switched off (centrelines and labels are available but not shown by default). */
-const OFF_BY_DEFAULT = new Set(['BLDG-LABEL', 'ROAD-MINOR', 'ROAD-MAJOR', 'RAIL-CL', 'WATERWAY']);
+const OFF_BY_DEFAULT = new Set(['ROOF-PITCH', 'BLDG-LABEL', 'ROAD-MINOR', 'ROAD-MAJOR', 'RAIL-CL', 'WATERWAY']);
 
 export function defaultLayerToggles(): Record<string, boolean> {
   return Object.fromEntries(LAYER_DEFS.map((l) => [l.name, !OFF_BY_DEFAULT.has(l.name)]));
@@ -103,7 +109,7 @@ export const FEATURE_LAYERS: Record<string, string[]> = {
   bridges: ['BRIDGE'],
   walls: ['WALL'],
   trees: ['TREES'],
-  buildings: ['BUILDINGS', 'LISTED', 'ROOF', 'BLDG-LABEL'],
+  buildings: ['BUILDINGS', 'LISTED', 'ROOF', 'ROOF-PITCH', 'BLDG-LABEL'],
 };
 
 const LINE_LAYER: Record<string, string> = {
@@ -163,7 +169,15 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
   }
   if (f.buildings) {
     for (const b of site.buildings) {
-      add('BUILDINGS', { t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground });
+      add('BUILDINGS', {
+        t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground,
+        attrs: {
+          id: b.id, ground_m: +b.ground.toFixed(2), top_m: +b.top.toFixed(2), height_source: b.source,
+          ...(b.tags['building:levels'] ? { levels: b.tags['building:levels'] } : {}),
+          ...(b.roofParts ? { roof: b.roofParts.map((r) => r.type).join('+') } : {}),
+          ...(b.listed ? { listed: `${b.listed.grade} (${b.listed.entry})` } : {}),
+        },
+      });
       if (b.listed) add('LISTED', { t: 'poly', rings: b.rings, z: b.ground });
       if (f.roofs) {
         for (const fit of b.roofParts ?? (b.roof ? [b.roof] : [])) {
@@ -179,6 +193,32 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
       }
     }
   }
+  // Spot levels at road/path junctions (where three or more ways meet).
+  const ends = new Map<string, { p: XY; n: number }>();
+  for (const l of site.lines) {
+    if (!/^(road|path)/.test(l.kind) || l.tunnel) continue;
+    for (const p of [l.coords[0], l.coords[l.coords.length - 1]]) {
+      const k = `${Math.round(p[0] * 10)},${Math.round(p[1] * 10)}`;
+      const e = ends.get(k);
+      if (e) e.n++; else ends.set(k, { p, n: 1 });
+    }
+  }
+  for (const { p, n } of ends.values()) {
+    if (n < 3 || p[0] <= site.bbox.minE + 1 || p[0] >= site.bbox.maxE - 1 || p[1] <= site.bbox.minN + 1 || p[1] >= site.bbox.maxN - 1) continue;
+    add('SPOT-LEVEL', { t: 'circle', c: p, r: 0.25 });
+    add('SPOT-LEVEL', { t: 'text', p: [p[0] + 2.2, p[1] + 1.2], text: sample(site.dtm, p[0], p[1]).toFixed(2), size: 1.6 });
+  }
+  if (f.buildings && f.roofs) {
+    for (const b of site.buildings) {
+      for (const r of b.roofParts ?? (b.roof ? [b.roof] : [])) {
+        let deg = 0;
+        if (r.type === 'gable' || r.type === 'hip') deg = (Math.atan((r.ridge - r.eaves) / r.b) * 180) / Math.PI;
+        else if (r.type === 'shed' && r.plane) deg = (Math.atan(Math.hypot(r.plane[1], r.plane[2])) * 180) / Math.PI;
+        if (deg >= 3) add('ROOF-PITCH', { t: 'text', p: r.centre, text: `${deg.toFixed(0)}°`, size: 1.5 });
+      }
+    }
+  }
+  if (opts.redLine && opts.redLine.length > 2) add('REDLINE', { t: 'line', pts: [...opts.redLine, opts.redLine[0]] });
   for (const t of f.trees) add('TREES', { t: 'tree', c: t.p, r: t.r });
   const { minE, minN, maxE, maxN } = site.bbox;
   add('BOUNDARY', { t: 'line', pts: site.shape ? [...site.shape, site.shape[0]] : [[minE, minN], [maxE, minN], [maxE, maxN], [minE, maxN], [minE, minN]] });
@@ -207,6 +247,32 @@ export interface SheetOptions {
 const MARGIN = 10; // mm
 const STRIP = 18; // mm title strip
 
+/** SVG groups for drawing layers: `X`/`Y` map model coordinates to paper mm, `k` is mm per model unit. */
+export function layerSvg(layers: Layer[], X: (e: number) => string, Y: (n: number) => string, k: number, path: (pts: Ring, close: boolean) => string): string[] {
+  const out: string[] = [];
+  for (const l of layers) {
+    const dash = l.dash ? ` stroke-dasharray="${l.dash}"` : '';
+    out.push(`<g inkscape:groupmode="layer" inkscape:label="${l.name}" id="${l.name}" clip-path="url(#site)" ` +
+      `stroke="${l.stroke}" stroke-width="${l.weight}" stroke-linejoin="round" stroke-linecap="round" fill="${l.fill ?? 'none'}"${dash}>`);
+    for (const it of l.items) {
+      if (it.t === 'line') out.push(`<path d="${path(it.pts, false)}"${it.dashed ? ' stroke-dasharray="1.5 1" opacity="0.6"' : ''} fill="none"/>`);
+      else if (it.t === 'poly') out.push(`<path d="${it.rings.map((r) => path(r, true)).join('')}" fill-rule="evenodd"/>`);
+      else if (it.t === 'circle') out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="none"/>`);
+      else if (it.t === 'tree') {
+        out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="#4f8a3c" fill-opacity="0.14"/>` +
+          `<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${Math.max(0.25, 0.25 * k).toFixed(2)}" fill="${l.stroke}" stroke="none"/>`);
+      }
+      else {
+        out.push(`<text x="${X(it.p[0])}" y="${Y(it.p[1])}" font-size="${it.size}" fill="${l.stroke}" stroke="#fff" ` +
+          `stroke-width="0.6" paint-order="stroke" text-anchor="middle" dominant-baseline="middle"` +
+          `${it.angle ? ` transform="rotate(${(-it.angle).toFixed(1)} ${X(it.p[0])} ${Y(it.p[1])})"` : ''}>${it.text}</text>`);
+      }
+    }
+    out.push('</g>');
+  }
+  return out;
+}
+
 /** SVG in millimetres at the chosen scale. Layers are Inkscape/Illustrator-friendly groups. */
 export function writeSvg(layers: Layer[], bbox: BBox, s: SheetOptions): string {
   const k = 1000 / s.scale; // mm per metre
@@ -231,26 +297,7 @@ export function writeSvg(layers: Layer[], bbox: BBox, s: SheetOptions): string {
     out.push(`<g inkscape:groupmode="layer" inkscape:label="HILLSHADE" id="HILLSHADE" opacity="0.45">` +
       `<image href="${s.underlay}" x="${m}" y="${m}" width="${wMap.toFixed(2)}" height="${hMap.toFixed(2)}" preserveAspectRatio="none"/></g>`);
   }
-  for (const l of layers) {
-    const dash = l.dash ? ` stroke-dasharray="${l.dash}"` : '';
-    out.push(`<g inkscape:groupmode="layer" inkscape:label="${l.name}" id="${l.name}" clip-path="url(#site)" ` +
-      `stroke="${l.stroke}" stroke-width="${l.weight}" stroke-linejoin="round" stroke-linecap="round" fill="${l.fill ?? 'none'}"${dash}>`);
-    for (const it of l.items) {
-      if (it.t === 'line') out.push(`<path d="${path(it.pts, false)}"${it.dashed ? ' stroke-dasharray="1.5 1" opacity="0.6"' : ''} fill="none"/>`);
-      else if (it.t === 'poly') out.push(`<path d="${it.rings.map((r) => path(r, true)).join('')}" fill-rule="evenodd"/>`);
-      else if (it.t === 'circle') out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="none"/>`);
-      else if (it.t === 'tree') {
-        out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="#4f8a3c" fill-opacity="0.14"/>` +
-          `<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${Math.max(0.25, 0.25 * k).toFixed(2)}" fill="${l.stroke}" stroke="none"/>`);
-      }
-      else {
-        out.push(`<text x="${X(it.p[0])}" y="${Y(it.p[1])}" font-size="${it.size}" fill="${l.stroke}" stroke="#fff" ` +
-          `stroke-width="0.6" paint-order="stroke" text-anchor="middle" dominant-baseline="middle"` +
-          `${it.angle ? ` transform="rotate(${(-it.angle).toFixed(1)} ${X(it.p[0])} ${Y(it.p[1])})"` : ''}>${it.text}</text>`);
-      }
-    }
-    out.push('</g>');
-  }
+  out.push(...layerSvg(layers, X, Y, k, path));
   if (s.furniture) out.push(furniture(W, wMap, hMap, s, bbox));
   out.push('</svg>');
   return out.join('\n');

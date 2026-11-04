@@ -30,10 +30,12 @@ for f in glob.glob(f'{out}/*_3d.dxf'):
     for k, v in sorted(c.items()):
         print('  ', k, v)
 
-for f in glob.glob(f'{out}/*_bng.dxf') + glob.glob(f'{out}/*_local.dxf'):
+import ezdxf
+for f in sorted(glob.glob(f'{out}/*_r2000.dxf') + glob.glob(f'{out}/*_r12.dxf') + glob.glob(f'{out}/*Section*.dxf')):
     if f.endswith('_3d.dxf'):
         continue
-    doc, aud = recover.readfile(f)
+    doc = ezdxf.readfile(f)  # strict reader: fails on malformed structure
+    aud = doc.audit()
     c = Counter((e.dxf.layer, e.dxftype()) for e in doc.modelspace())
     print(f'2D DXF {os.path.basename(f)}: version {doc.dxfversion}, audit errors {len(aud.errors)}, fixes {len(aud.fixes)}, blocks {[b.name for b in doc.blocks if not b.name.startswith("*")]}')
     for k, v in sorted(c.items()):
@@ -45,3 +47,11 @@ for z in glob.glob(f'{out}/site_*_obj.zip'):
     for f in sorted(glob.glob(f'{tmp}/obj/*.obj')):
         m = trimesh.load(f, process=False, force='mesh')
         print(f'  {os.path.basename(f):16} faces={len(m.faces)}')
+
+for f in glob.glob(f'{out}/*.pdf'):
+    try:
+        from pypdf import PdfReader
+        r = PdfReader(f)
+        print(f'PDF {os.path.basename(f)}: {len(r.pages)} pages, sizes mm', [tuple(round(float(x) * 25.4 / 72) for x in (p.mediabox.width, p.mediabox.height)) for p in r.pages])
+    except ImportError:
+        print('PDF', os.path.basename(f), 'header', open(f, 'rb').read(8))

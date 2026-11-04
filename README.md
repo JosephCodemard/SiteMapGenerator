@@ -57,6 +57,17 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
 
+## Drawings, sheets and CAD standards (step 5)
+
+- **Drawing types:** *Site plan*, *Site location plan* (defaults to 1:1250, red-line boundary you draw on the map, else the site outline), *Roof plan* (footprints, ridges/hips, pitch angles, heights), and **sections / elevations** from a cut line drawn on the map (several allowed, A–A, B–B).
+- **Sheet engine:** smallest A-series paper that fits at the scale (portrait or landscape; falls back to a scale that fits), map frame with **BNG grid ticks**, north arrow, scale bar, a **key generated from the layers drawn**, notes, revision table and **title block** (project, drawing no., scale, date, drawn by, status). Output SVG, PNG and a **multi-page vector PDF pack** (location plan, site plan, roof plan, every section; text stays selectable).
+- **Section / elevation profile:** looks to the *left* of the line A→B. Ground line (DTM) with soil poché, buildings the line cuts as solid poché using their fitted roof shapes, buildings beyond (to a depth you set) in lighter elevation, trees, water level, 5 m level grid and eaves/ridge levels, with a stated vertical exaggeration. *Elevation* mode cuts nothing and draws everything on the viewing side. Sections export as SVG, in the PDF pack, and as DXF (chainage along X, level × exaggeration along Y).
+- **DXF R2000** (default): entity handles, `LWPOLYLINE`, solid `HATCH` fills, **ISO 128 lineweights** (0.13–0.70 mm) and true colour per layer, a `TREE` block with INSERTs at crown radius, and **XDATA** (`UKDTM`: id, ground/top levels, height source, levels, roof types, listing) on every building. Read back with ezdxf's strict reader and audited with 0 errors. **R12** remains available for the widest compatibility.
+- **Layer standards:** *Simple* names, or *NCS/AIA style* (`C-ROAD-KERB`, `A-SITE-BLDG`, `C-TOPO-MAJR`, `A-ROOF-RIDG`, …), plus an optional prefix (project code). Real BS EN ISO 13567 layer codes are firm- and project-specific, so use the prefix or rename on import rather than expect a universal mapping.
+- **Spot levels** (junction levels, `C-TOPO-SPOT`), **roof pitches**, **listed buildings**, **entrances**, **markings** and the red line are separate layers.
+- **Shadow study sheet** (Analysis → Shadow): 21 Mar / Jun / Dec at 09:00, 12:00, 15:00 on one sheet, saved as PDF.
+- Not done: DXF paper-space layouts/viewports and a CAD-native title block (the title block is in SVG/PDF); axonometric line drawings; hatch patterns (solid fills only).
+
 ## Analysis panel (step 4)
 
 All analyses run client-side in a Web Worker (cancellable) and render over a hillshade/buildings/roads base; each can be saved as an image and as data (ESRI ASCII grid or CSV). They are **screening tools**, labelled as such in the app.

@@ -55,12 +55,31 @@ await page.selectOption('#lod', 'lod15');
 await page.click('#rebuild');
 await idle();
 
+// Red line, location plan, roof plan, a section and an elevation.
+await page.evaluate(() => { const [x0, y0, x1, y1] = ['minE', 'minN', 'maxE', 'maxN'].map((k) => +document.getElementById(k).value); const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  window.setRedLine([[cx - 80, cy - 60], [cx + 90, cy - 60], [cx + 90, cy + 70], [cx - 80, cy + 70]]);
+  window.addCut([x0 + 20, cy - 10], [x1 - 20, cy - 10]); window.addCut([cx - 60, y0 + 20], [cx - 60, y1 - 20]); });
+await page.selectOption('#drawType', 'location');
+await page.click('#previewDrawing');
+await page.waitForFunction(() => document.getElementById('busy').hidden && document.querySelector('#view-drawing svg'), null, { timeout: 120000 });
+await page.waitForTimeout(800);
+await page.screenshot({ path: `${out}/3-location.png` });
+await page.selectOption('#drawType', 'roof');
+await page.click('#previewDrawing'); await idle(); await page.waitForTimeout(500);
+await page.screenshot({ path: `${out}/3-roofplan.png` });
+await page.selectOption('#drawType', 'site');
+await page.click('#secPreview'); await idle(); await page.waitForTimeout(500);
+await page.screenshot({ path: `${out}/3-section.png` });
+await page.selectOption('#secMode', 'elevation');
+await page.click('#secPreview'); await idle(); await page.waitForTimeout(500);
+await page.screenshot({ path: `${out}/3-elevation.png` });
+await page.selectOption('#secMode', 'section');
 await page.click('#previewDrawing');
 await page.waitForFunction(() => document.getElementById('busy').hidden && document.querySelector('#view-drawing svg'), null, { timeout: 120000 });
 await page.waitForTimeout(1000);
 await page.screenshot({ path: `${out}/3-drawing.png` });
 
-const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportSvg', 'exportPng', 'exportDxf', 'exportLaser', 'exportData'];
+const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportSvg', 'exportPng', 'exportDxf', 'exportPdf', 'secSvg', 'secDxf', 'exportLaser', 'exportData'];
 for (const id of exports) {
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click(`#${id}`)]);
   const p = `${out}/${dl.suggestedFilename()}`;
@@ -68,6 +87,9 @@ for (const id of exports) {
   console.log('download', id, dl.suggestedFilename());
   await idle();
 }
+// R12 + NCS layer names as well.
+await page.selectOption('#dxfFormat', 'r12'); await page.selectOption('#layerScheme', 'ncs');
+{ const [d] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#exportDxf')]); await d.saveAs(`${out}/ncs_${d.suggestedFilename()}`); await idle(); }
 // Analyses (flood and crime use the live EA / police services).
 for (const [type, setup] of [['shadow', null], ['wind', null], ['flood', null], ['crime', null], ['footfall', null]]) {
   await page.selectOption('#anType', type);
@@ -78,8 +100,11 @@ for (const [type, setup] of [['shadow', null], ['wind', null], ['flood', null], 
   await idle();
   await page.waitForTimeout(800);
   console.log('analysis', type, ((Date.now() - t) / 1000).toFixed(1) + 's:', (await page.textContent('#anSummary')).slice(0, 230));
-  await page.screenshot({ path: `${out}/4-analysis-${type}.png` });
+  await page.screenshot({ path: `${out}/4-analysis-${type}.png`, timeout: 120000 });
 }
+await page.selectOption('#anType', 'shadow');
+{ const [sd] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#anStudy')]); await sd.saveAs(`${out}/${sd.suggestedFilename()}`); console.log('download', sd.suggestedFilename()); await idle(); }
+await page.selectOption('#anType', 'footfall'); await page.click('#anRun'); await idle();
 const [adl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#anData')]);
 await adl.saveAs(`${out}/${adl.suggestedFilename()}`);
 console.log('download analysis data', adl.suggestedFilename());

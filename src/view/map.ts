@@ -24,6 +24,12 @@ export class AreaMap {
   onShape: (shape: Ring | null, b: BBox) => void = () => {};
   onChange: (b: BBox) => void = () => {};
   onMessage: (m: string) => void = () => {};
+  /** Finished planning red-line outline (when the polygon tool was started for it). */
+  onRedLine: (ring: Ring) => void = () => {};
+  /** A finished section cut line A -> B (BNG). */
+  onCut: (a: XY, b: XY) => void = () => {};
+  private target: 'site' | 'redline' = 'site';
+  private cutStart: XY | null = null;
 
   constructor(el: HTMLElement, center: [number, number]) {
     this.map = new MapLibre({
@@ -44,12 +50,17 @@ export class AreaMap {
             attribution: 'LIDAR © Environment Agency (OGL v3)',
           },
           aoi: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+          redline: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+          cuts: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
         },
         layers: [
           { id: 'osm', type: 'raster', source: 'osm' },
           { id: 'lidar', type: 'raster', source: 'lidar', paint: { 'raster-opacity': 0.5 }, layout: { visibility: 'none' } },
           { id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': '#e0006b', 'fill-opacity': 0.12 } },
           { id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': '#e0006b', 'line-width': 2 } },
+          { id: 'redline-line', type: 'line', source: 'redline', paint: { 'line-color': '#e00000', 'line-width': 3 } },
+          { id: 'cuts-line', type: 'line', source: 'cuts', paint: { 'line-color': '#0b3d91', 'line-width': 2.5, 'line-dasharray': [3, 2] } },
+          { id: 'cuts-pts', type: 'circle', source: 'cuts', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 5, 'circle-color': '#0b3d91' } },
         ],
       },
     });
@@ -81,6 +92,14 @@ export class AreaMap {
       this.finish(this.shapeFrom(a, p));
     });
     this.map.on('click', (e) => {
+      if ((this.tool as string) === 'cut') {
+        const p = bng(e);
+        if (!this.cutStart) { this.cutStart = p; this.onMessage('Click the end of the cut line.'); return; }
+        const a = this.cutStart;
+        this.setTool(null);
+        if (Math.hypot(p[0] - a[0], p[1] - a[1]) >= 3) this.onCut(a, p);
+        return;
+      }
       if (this.tool !== 'polygon') return;
       this.verts.push(bng(e));
       this.showPolygon();
@@ -120,7 +139,7 @@ export class AreaMap {
 
   private showPolygon() {
     const pts = this.hover && this.tool === 'polygon' ? [...this.verts, this.hover] : this.verts;
-    (this.map.getSource('aoi') as GeoJSONSource | undefined)?.setData({
+    (this.map.getSource(this.target === 'redline' ? 'redline' : 'aoi') as GeoJSONSource | undefined)?.setData({
       type: 'Feature', properties: {},
       geometry: pts.length > 2 ? { type: 'Polygon', coordinates: [[...pts.map(([e, n]) => toWGS(e, n)), toWGS(...pts[0])]] }
         : { type: 'LineString', coordinates: pts.map(([e, n]) => toWGS(e, n)) },
@@ -132,6 +151,7 @@ export class AreaMap {
     if (ring.length < 3) { this.onMessage('A polygon needs at least 3 corners.'); return; }
     if (!isSimple(ring)) { this.onMessage('The outline crosses itself — undo a corner (Backspace) and try again.'); return; }
     this.verts = [];
+    if (this.target === 'redline') { this.setTool(null); this.setRedLine(ring); this.onRedLine(ring); return; }
     this.finish(ring);
   }
 
@@ -143,8 +163,10 @@ export class AreaMap {
   }
 
   /** Start a drawing tool (rectangle: drag corner to corner; hexagon/circle: drag from the centre; polygon: click corners, double-click to finish). */
-  setTool(kind: ShapeKind | null) {
-    this.tool = kind;
+  setTool(kind: ShapeKind | 'cut' | null, target: 'site' | 'redline' = 'site') {
+    this.tool = kind as ShapeKind | null;
+    this.target = target;
+    this.cutStart = null;
     this.start = null;
     this.verts = [];
     this.hover = null;
@@ -163,6 +185,25 @@ export class AreaMap {
       type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] },
     });
     if (!preview) this.onChange(b);
+  }
+
+  setRedLine(ring: Ring | null) {
+    (this.map.getSource('redline') as GeoJSONSource | undefined)?.setData({
+      type: 'FeatureCollection',
+      features: ring ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [...ring, ring[0]].map(([e, n]) => toWGS(e, n)) } }] : [],
+    });
+  }
+
+  /** Show the section cut lines (A, B markers). */
+  setCuts(cuts: { a: XY; b: XY }[]) {
+    (this.map.getSource('cuts') as GeoJSONSource | undefined)?.setData({
+      type: 'FeatureCollection',
+      features: cuts.flatMap((c) => [
+        { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: [toWGS(...c.a), toWGS(...c.b)] } },
+        { type: 'Feature' as const, properties: {}, geometry: { type: 'Point' as const, coordinates: toWGS(...c.a) } },
+        { type: 'Feature' as const, properties: {}, geometry: { type: 'Point' as const, coordinates: toWGS(...c.b) } },
+      ]),
+    });
   }
 
   fitArea(b: BBox) {

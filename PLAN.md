@@ -268,4 +268,9 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 | M2 road markings, building attributes (CSV/GeoJSON), listed buildings | **done** |
 | Side-elevation slice (4.6) | planned in M4 |
 | M3 analysis (sun/shadow, wind, flood, crime, entrances/footfall, worker, panel) | **done**: 31 numerical tests; all five run live in the browser on Pulteney (EA flood zones/defences and police data fetched live) |
-| M4 – M6 | not started |
+| M4 sheet engine, title block, legend, grid ticks, PDF pack | **done** (5-page A2/A1 PDF verified, text selectable) |
+| M4 location plan with red line, roof plan, spot levels, pitches | **done** |
+| M4 section & elevation from a drawn cut line (SVG/PDF/DXF) | **done** (synthetic tests + real Pulteney run) |
+| M4 R2000 DXF (handles, LWPOLYLINE, HATCH, lineweights, true colour, blocks, XDATA), layer schemes | **done**: ezdxf strict read + audit 0 errors; paper-space layouts not done |
+| M4 shadow study sheet | **done** |
+| M5 – M6 | not started |
