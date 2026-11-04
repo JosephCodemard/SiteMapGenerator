@@ -262,6 +262,7 @@ Not verified: opening the R2000 DXF in real AutoCAD/Rhino (ezdxf only); PDF rend
 ## 7f. Iteration 3, milestone M5 (2026-11-04)
 
 `export/{gltf,threemf,rhino}.ts`, `process/{solidify,facades}.ts`, export UI for GLB/3MF/3DM + union/fuse options, facade layers. manifold-3d and rhino3dm are dynamically imported and their `.wasm` files are loaded with `?url` imports in the browser (vite bundles them); in Node (vitest) they load directly.
+Build gotcha: `rhino3dm`'s default entry pulls in Node modules (`ws`, `fs`) and breaks `vite build`; the browser path imports `rhino3dm/rhino3dm.module.js`, tests use the CommonJS entry via a runtime specifier. Always run `npm run build` and, ideally, `tools/e2e/drive.mjs` against `vite preview` (production bundle), not just the dev server.
 Known: a fused STL can contain an inverted shell for an enclosed courtyard void (legitimate); facade windows on slopes use the building's lowest ground level, so uphill windows can sit slightly into the ground.
 
 ## 8. Next steps

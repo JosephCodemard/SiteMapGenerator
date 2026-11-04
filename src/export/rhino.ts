@@ -11,14 +11,17 @@ type Rhino = Awaited<ReturnType<typeof load>>;
 let cached: ReturnType<typeof load> | null = null;
 
 async function load() {
-  const mod = (await import('rhino3dm')) as unknown as { default?: (o?: unknown) => Promise<unknown> } & ((o?: unknown) => Promise<unknown>);
-  const factory = (mod.default ?? mod) as (o?: unknown) => Promise<typeof import('rhino3dm').default extends never ? never : any>;
-  let opts: unknown;
+  type Factory = (o?: unknown) => Promise<any>;
   if (typeof window !== 'undefined') {
-    const url = (await import('rhino3dm/rhino3dm.wasm?url')).default as string;
-    opts = { locateFile: () => url };
+    // Browser: the ES-module build plus its WASM (no Node requires).
+    const [mod, wasm] = await Promise.all([import('rhino3dm/rhino3dm.module.js'), import('rhino3dm/rhino3dm.wasm?url')]);
+    const url = (wasm as { default: string }).default;
+    return ((mod as unknown as { default: Factory }).default)({ locateFile: () => url });
   }
-  return factory(opts);
+  // Node (tests): the package's CommonJS entry, kept out of the browser bundle.
+  const spec = 'rhino3dm';
+  const mod = (await import(/* @vite-ignore */ spec)) as { default?: Factory } & Factory;
+  return (mod.default ?? mod)();
 }
 
 const hex = (c: string): { r: number; g: number; b: number; a: number } => ({ r: parseInt(c.slice(1, 3), 16), g: parseInt(c.slice(3, 5), 16), b: parseInt(c.slice(5, 7), 16), a: 255 });
