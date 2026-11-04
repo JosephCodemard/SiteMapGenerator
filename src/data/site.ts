@@ -1,5 +1,5 @@
 import { fetchLidar } from './lidar';
-import { fetchOsm, shiftAndClip, type OsmFootprint } from './osm';
+import { fetchOsm, parseOsm, shiftAndClip, type OsmFootprint } from './osm';
 import { estimateOffset } from '../process/align';
 import { buildingHeights, type HeightOptions } from '../process/buildings';
 import { fillNoData } from '../process/raster';
@@ -13,6 +13,8 @@ export interface FetchOptions {
   /** Estimate and remove the OSM imagery offset using LIDAR roofs. */
   align: boolean;
   heights: HeightOptions;
+  /** Overpass-JSON supplied by the user (e.g. from overpass-turbo); used instead of querying Overpass. */
+  osmData?: unknown;
 }
 
 export type Log = (msg: string) => void;
@@ -35,7 +37,8 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
     fetchLidar('dtm', bbox, progress('LIDAR DTM'), signal),
     opts.dsm ? fetchLidar('dsm', bbox, progress('LIDAR DSM'), signal) : Promise.resolve(null),
     opts.osm
-      ? (log('OpenStreetMap: querying Overpass…'), fetchOsm(padded, signal).then((r) => {
+      ? (log(opts.osmData ? 'OpenStreetMap: using your file…' : 'OpenStreetMap: querying Overpass…'),
+        (opts.osmData ? Promise.resolve().then(() => parseOsm(opts.osmData, padded)) : fetchOsm(padded, signal)).then((r) => {
         log(`OpenStreetMap: ${r.buildings.length} buildings, ${r.lines.length} lines, ${r.areas.length} areas`);
         return r;
       }, (e) => {

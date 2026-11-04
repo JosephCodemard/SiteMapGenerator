@@ -1,16 +1,16 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { layerDef, type LayerId, type Scene } from '../process/scene';
 import type { Mesh } from '../process/mesh';
 
-/** WebGL preview of the terrain + LOD1 buildings (Z-up, local metres). */
+/** WebGL preview of the scene: one mesh per layer so each can be shown or hidden (Z-up, local metres). */
 export class Viewer3D {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private model = new THREE.Group();
-  private terrain?: THREE.Mesh;
-  private buildings?: THREE.Mesh;
+  private layers = new Map<LayerId, THREE.Object3D[]>();
   private zMin = 0;
   private resizeObserver: ResizeObserver;
 
@@ -48,35 +48,44 @@ export class Viewer3D {
     this.camera.updateProjectionMatrix();
   }
 
-  setModel(terrain: Mesh, buildings: Mesh | null, texture: HTMLCanvasElement | null) {
+  setScene(scene: Scene, texture: HTMLCanvasElement | null) {
     this.clear();
-    const tGeom = toGeometry(terrain, true);
     const tex = texture ? new THREE.CanvasTexture(texture) : null;
     if (tex) {
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     }
-    this.terrain = new THREE.Mesh(tGeom, new THREE.MeshLambertMaterial({ color: tex ? '#ffffff' : '#d8d3c4', map: tex }));
-    this.model.add(this.terrain);
-    if (buildings && buildings.indices.length) {
-      const bGeom = toGeometry(buildings, false).toNonIndexed();
-      bGeom.computeVertexNormals();
-      this.buildings = new THREE.Mesh(bGeom, new THREE.MeshLambertMaterial({ color: '#f4f1ea' }));
-      this.model.add(this.buildings);
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(bGeom, 30), new THREE.LineBasicMaterial({ color: '#7d7a72' }));
-      this.model.add(edges);
+    let bounds: THREE.Box3 | null = null;
+    for (const o of scene.objects) {
+      const def = layerDef(o.layer);
+      const geom = toGeometry(o.mesh, o.layer === 'terrain');
+      const isTerrain = o.layer === 'terrain';
+      const mat = new THREE.MeshLambertMaterial({
+        color: isTerrain && tex ? '#ffffff' : def.color, map: isTerrain ? tex : null, flatShading: !isTerrain,
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      this.model.add(mesh);
+      const list: THREE.Object3D[] = [mesh];
+      if ((o.layer === 'buildings' || o.layer === 'bridges') && o.mesh.indices.length < 4_000_000) {
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), new THREE.LineBasicMaterial({ color: '#7d7a72' }));
+        this.model.add(edges);
+        list.push(edges);
+      }
+      this.layers.set(o.layer, list);
+      if (isTerrain) {
+        geom.computeBoundingBox();
+        bounds = geom.boundingBox!.clone();
+      }
     }
-
-    tGeom.computeBoundingBox();
-    const bb = tGeom.boundingBox!;
-    this.zMin = bb.min.z;
+    if (!bounds) return;
+    this.zMin = bounds.min.z;
     const size = new THREE.Vector3();
-    bb.getSize(size);
+    bounds.getSize(size);
     const centre = new THREE.Vector3();
-    bb.getCenter(centre);
+    bounds.getCenter(centre);
     const r = Math.max(size.x, size.y);
-    this.controls.target.set(centre.x, centre.y, bb.min.z);
-    this.camera.position.set(centre.x - r * 0.6, centre.y - r * 0.9, bb.max.z + r * 0.7);
+    this.controls.target.set(centre.x, centre.y, bounds.min.z);
+    this.camera.position.set(centre.x - r * 0.6, centre.y - r * 0.9, bounds.max.z + r * 0.7);
     this.camera.near = r / 1000;
     this.camera.far = r * 20;
     this.camera.updateProjectionMatrix();
@@ -89,8 +98,8 @@ export class Viewer3D {
     this.model.position.z = this.zMin * (1 - z);
   }
 
-  setBuildingsVisible(v: boolean) {
-    this.model.children.forEach((c) => { if (c !== this.terrain) c.visible = v; });
+  setLayerVisible(id: LayerId, v: boolean) {
+    this.layers.get(id)?.forEach((o) => (o.visible = v));
   }
 
   screenshot(): Promise<Blob> {
@@ -106,15 +115,15 @@ export class Viewer3D {
       mat?.map?.dispose();
       mat?.dispose();
     }
-    this.terrain = this.buildings = undefined;
+    this.layers.clear();
   }
 }
 
-function toGeometry(m: Mesh, withUv: boolean): THREE.BufferGeometry {
+function toGeometry(m: Mesh, smooth: boolean): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
-  if (withUv && m.uvs) g.setAttribute('uv', new THREE.BufferAttribute(m.uvs, 2));
+  if (smooth && m.uvs) g.setAttribute('uv', new THREE.BufferAttribute(m.uvs, 2));
   g.setIndex(new THREE.BufferAttribute(m.indices, 1));
-  g.computeVertexNormals();
+  if (smooth) g.computeVertexNormals(); // other layers use flat shading from screen-space derivatives
   return g;
 }

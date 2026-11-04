@@ -1,4 +1,8 @@
+import { buildContext } from '../process/context';
 import type { ContourLine } from '../process/contours';
+import { roofLines } from '../process/roofs';
+import { offsetOutline, resample } from '../process/ribbon';
+import type { Tree } from '../process/trees';
 import type { BBox, Ring, SiteData, XY } from '../types';
 
 /** A layer in the 2D drawing model, shared by the SVG, PNG and DXF writers. */
@@ -19,54 +23,118 @@ export type Item =
   | { t: 'line'; pts: Ring; z?: number; dashed?: boolean }
   | { t: 'poly'; rings: Ring[]; z?: number; thickness?: number }
   | { t: 'circle'; c: XY; r: number }
+  /** A tree symbol at its true crown radius (a block INSERT in DXF). */
+  | { t: 'tree'; c: XY; r: number }
   | { t: 'text'; p: XY; text: string; size: number; angle?: number };
+
+/** Which context features are part of the drawing (mirrors the 3D feature switches). */
+export interface DrawingFeatures {
+  buildings: boolean;
+  roads: boolean;
+  paths: boolean;
+  rail: boolean;
+  water: boolean;
+  green: boolean;
+  bridges: boolean;
+  walls: boolean;
+  /** Trees to draw at crown radius (none = no trees). */
+  trees: Tree[];
+  /** Ridge and hip lines for buildings that have a fitted roof. */
+  roofs: boolean;
+}
+
+export const ALL_FEATURES: DrawingFeatures = {
+  buildings: true, roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: [], roofs: true,
+};
 
 export interface DrawingOptions {
   layers: Record<string, boolean>;
   buildingLabels: boolean;
+  features?: DrawingFeatures;
 }
 
 export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
   { name: 'GREEN', label: 'Parks & green space', stroke: '#9cc28a', aci: 82, weight: 0.13, fill: '#e3f0da' },
   { name: 'WOOD', label: 'Woodland', stroke: '#7aa56a', aci: 94, weight: 0.13, fill: '#cfe3c3' },
   { name: 'PAVED', label: 'Squares & pedestrian areas', stroke: '#c9c2b8', aci: 254, weight: 0.13, fill: '#f1ede7' },
-  { name: 'WATER', label: 'Water bodies', stroke: '#5b9bd5', aci: 150, weight: 0.18, fill: '#cfe4f7' },
-  { name: 'WATERWAY', label: 'Rivers & streams', stroke: '#3d7fc4', aci: 150, weight: 0.35 },
+  { name: 'WATER', label: 'Rivers & water bodies', stroke: '#5b9bd5', aci: 150, weight: 0.18, fill: '#cfe4f7' },
+  { name: 'WATERWAY', label: 'River centrelines', stroke: '#3d7fc4', aci: 150, weight: 0.13, dash: '2 1' },
   { name: 'CONTOUR-MINOR', label: 'Contours (minor)', stroke: '#b08a5a', aci: 33, weight: 0.13 },
   { name: 'CONTOUR-MAJOR', label: 'Contours (major)', stroke: '#8a5a2b', aci: 32, weight: 0.3 },
   { name: 'CONTOUR-LABEL', label: 'Contour labels', stroke: '#8a5a2b', aci: 32, weight: 0.13 },
-  { name: 'PATH', label: 'Footpaths & cycleways', stroke: '#8c8c8c', aci: 8, weight: 0.13, dash: '1 0.6' },
-  { name: 'ROAD-MINOR', label: 'Minor roads', stroke: '#555555', aci: 251, weight: 0.35 },
-  { name: 'ROAD-MAJOR', label: 'Major roads', stroke: '#222222', aci: 250, weight: 0.6 },
-  { name: 'RAIL', label: 'Railways', stroke: '#000000', aci: 7, weight: 0.5, dash: '3 1' },
+  { name: 'PATH', label: 'Footpaths & cycleways', stroke: '#8c8c8c', aci: 8, weight: 0.13, fill: '#f4efe6' },
+  { name: 'ROAD-SURFACE', label: 'Roads (kerb lines)', stroke: '#333333', aci: 251, weight: 0.25, fill: '#ebebeb' },
+  { name: 'ROAD-MINOR', label: 'Minor road centrelines', stroke: '#777777', aci: 9, weight: 0.13, dash: '3 1' },
+  { name: 'ROAD-MAJOR', label: 'Major road centrelines', stroke: '#555555', aci: 8, weight: 0.18, dash: '3 1' },
+  { name: 'RAIL', label: 'Railways', stroke: '#000000', aci: 7, weight: 0.35, fill: '#e2dfdb' },
+  { name: 'RAIL-CL', label: 'Railway centrelines', stroke: '#000000', aci: 7, weight: 0.25, dash: '3 1' },
   { name: 'BRIDGE', label: 'Bridges', stroke: '#d0342c', aci: 1, weight: 0.5, fill: '#f6d9d6' },
+  { name: 'WALL', label: 'Walls & fences', stroke: '#6b5a44', aci: 30, weight: 0.25 },
   { name: 'BUILDINGS', label: 'Building footprints', stroke: '#1a1a1a', aci: 7, weight: 0.35, fill: '#d9d4cc' },
+  { name: 'ROOF', label: 'Roof ridges & hips', stroke: '#555555', aci: 8, weight: 0.18 },
   { name: 'BLDG-LABEL', label: 'Building heights', stroke: '#444444', aci: 8, weight: 0.13 },
-  { name: 'TREES', label: 'Trees (OSM)', stroke: '#4f8a3c', aci: 96, weight: 0.18 },
+  { name: 'TREES', label: 'Trees', stroke: '#4f8a3c', aci: 96, weight: 0.18 },
   { name: 'BOUNDARY', label: 'Site boundary', stroke: '#e0006b', aci: 6, weight: 0.5, dash: '4 1 1 1' },
 ];
 
+/** Layers that start switched off (centrelines and labels are available but not shown by default). */
+const OFF_BY_DEFAULT = new Set(['BLDG-LABEL', 'ROAD-MINOR', 'ROAD-MAJOR', 'RAIL-CL', 'WATERWAY']);
+
 export function defaultLayerToggles(): Record<string, boolean> {
-  return Object.fromEntries(LAYER_DEFS.map((l) => [l.name, l.name !== 'BLDG-LABEL']));
+  return Object.fromEntries(LAYER_DEFS.map((l) => [l.name, !OFF_BY_DEFAULT.has(l.name)]));
 }
+
+/** Which drawing layers belong to each feature switch (so one checkbox controls model and drawing). */
+export const FEATURE_LAYERS: Record<string, string[]> = {
+  roads: ['ROAD-SURFACE', 'ROAD-MINOR', 'ROAD-MAJOR'],
+  paths: ['PATH'],
+  rail: ['RAIL', 'RAIL-CL'],
+  water: ['WATER', 'WATERWAY'],
+  green: ['GREEN', 'WOOD', 'PAVED'],
+  bridges: ['BRIDGE'],
+  walls: ['WALL'],
+  trees: ['TREES'],
+  buildings: ['BUILDINGS', 'ROOF', 'BLDG-LABEL'],
+};
 
 const LINE_LAYER: Record<string, string> = {
   'road-major': 'ROAD-MAJOR', 'road-minor': 'ROAD-MINOR', path: 'PATH',
-  rail: 'RAIL', river: 'WATERWAY', stream: 'WATERWAY',
+  rail: 'RAIL-CL', river: 'WATERWAY', stream: 'WATERWAY', wall: 'WALL',
 };
-const AREA_LAYER: Record<string, string> = {
-  water: 'WATER', green: 'GREEN', wood: 'WOOD', paved: 'PAVED', bridge: 'BRIDGE',
-};
+const AREA_LAYER: Record<string, string> = { green: 'GREEN', wood: 'WOOD', paved: 'PAVED' };
 
 /** Build the layered drawing (BNG coordinates) from the dataset + contours. */
 export function buildDrawing(site: SiteData, contours: ContourLine[], opts: DrawingOptions): Layer[] {
+  const f = opts.features ?? ALL_FEATURES;
+  const ctx = buildContext(site);
   const layers = new Map(LAYER_DEFS.map((d) => [d.name, { ...d, items: [] as Item[] }]));
   const add = (name: string, item: Item) => layers.get(name)!.items.push(item);
 
-  for (const a of site.areas) add(AREA_LAYER[a.kind], { t: 'poly', rings: a.rings });
+  if (f.green) for (const a of ctx.areas) add(AREA_LAYER[a.kind], { t: 'poly', rings: a.polygon });
+  if (f.water) for (const p of ctx.water) add('WATER', { t: 'poly', rings: p });
+  if (f.roads) for (const p of ctx.roads) add('ROAD-SURFACE', { t: 'poly', rings: p });
+  if (f.paths) for (const p of ctx.paths) add('PATH', { t: 'poly', rings: p });
+  if (f.rail) for (const p of ctx.rail) add('RAIL', { t: 'poly', rings: p });
+  if (f.bridges) {
+    for (const b of ctx.bridges) {
+      // Deck outline: the buffered centreline, drawn as one closed polygon.
+      const { left, right } = offsetOutline(resample(b.coords, 2), b.width / 2);
+      add('BRIDGE', { t: 'poly', rings: [[...left, ...right.reverse()]] });
+    }
+    for (const a of site.areas) if (a.kind === 'bridge') add('BRIDGE', { t: 'poly', rings: a.rings });
+  }
+  if (f.walls) for (const w of ctx.walls) add('WALL', { t: 'line', pts: w.coords });
+  // Centrelines (off by default) so CAD users can still pick them up; tunnels stay dashed.
   for (const l of site.lines) {
-    add(l.bridge && l.kind !== 'path' ? 'BRIDGE' : LINE_LAYER[l.kind], { t: 'line', pts: l.coords, dashed: l.tunnel });
-    if (l.bridge && l.kind !== 'path') add(LINE_LAYER[l.kind], { t: 'line', pts: l.coords });
+    const layer = LINE_LAYER[l.kind];
+    if (!layer || l.kind === 'wall') continue;
+    if (l.kind === 'path') continue;
+    const feature = l.kind.startsWith('road') ? f.roads : l.kind === 'rail' ? f.rail : f.water;
+    if (!feature) continue;
+    if (l.tunnel) {
+      // Tunnels are not in the polygons: show them dashed on the visible layer.
+      add(l.kind.startsWith('road') ? 'ROAD-SURFACE' : l.kind === 'rail' ? 'RAIL' : 'WATER', { t: 'line', pts: l.coords, dashed: true });
+    } else add(layer, { t: 'line', pts: l.coords });
   }
   for (const c of contours) {
     add(c.major ? 'CONTOUR-MAJOR' : 'CONTOUR-MINOR', { t: 'line', pts: c.closed ? [...c.coords, c.coords[0]] : c.coords, z: c.level });
@@ -79,14 +147,21 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
       add('CONTOUR-LABEL', { t: 'text', p, text: c.level.toFixed(0), size: 2.5, angle });
     }
   }
-  for (const b of site.buildings) {
-    add('BUILDINGS', { t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground });
-    if (opts.buildingLabels) {
-      const [e, n] = centroid(b.rings[0]);
-      add('BLDG-LABEL', { t: 'text', p: [e, n], text: `${(b.top - b.ground).toFixed(1)}m`, size: 1.5 });
+  if (f.buildings) {
+    for (const b of site.buildings) {
+      add('BUILDINGS', { t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground });
+      if (f.roofs && b.roof && b.roof.type !== 'flat') {
+        const rl = roofLines(b.roof);
+        if (rl.ridge) add('ROOF', { t: 'line', pts: rl.ridge, z: rl.z });
+        for (const h of rl.hips) add('ROOF', { t: 'line', pts: h, z: rl.z });
+      }
+      if (opts.buildingLabels) {
+        const [e, n] = centroid(b.rings[0]);
+        add('BLDG-LABEL', { t: 'text', p: [e, n], text: `${(b.top - b.ground).toFixed(1)}m`, size: 1.5 });
+      }
     }
   }
-  for (const t of site.trees) add('TREES', { t: 'circle', c: t, r: 2.5 });
+  for (const t of f.trees) add('TREES', { t: 'tree', c: t.p, r: t.r });
   const { minE, minN, maxE, maxN } = site.bbox;
   add('BOUNDARY', { t: 'line', pts: [[minE, minN], [maxE, minN], [maxE, maxN], [minE, maxN], [minE, minN]] });
 
@@ -142,6 +217,10 @@ export function writeSvg(layers: Layer[], bbox: BBox, s: SheetOptions): string {
       if (it.t === 'line') out.push(`<path d="${path(it.pts, false)}"${it.dashed ? ' stroke-dasharray="1.5 1" opacity="0.6"' : ''} fill="none"/>`);
       else if (it.t === 'poly') out.push(`<path d="${it.rings.map((r) => path(r, true)).join('')}" fill-rule="evenodd"/>`);
       else if (it.t === 'circle') out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="none"/>`);
+      else if (it.t === 'tree') {
+        out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="#4f8a3c" fill-opacity="0.14"/>` +
+          `<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${Math.max(0.25, 0.25 * k).toFixed(2)}" fill="${l.stroke}" stroke="none"/>`);
+      }
       else {
         out.push(`<text x="${X(it.p[0])}" y="${Y(it.p[1])}" font-size="${it.size}" fill="${l.stroke}" stroke="#fff" ` +
           `stroke-width="0.6" paint-order="stroke" text-anchor="middle" dominant-baseline="middle"` +
@@ -212,12 +291,10 @@ const TEXTURE_STYLE: Record<string, { stroke: string; weight: number; fill?: str
   WOOD: { stroke: '#93b67b', weight: 0, fill: '#93b67b' },
   PAVED: { stroke: '#d8d2c6', weight: 0, fill: '#d8d2c6' },
   WATER: { stroke: '#86b2dc', weight: 0, fill: '#86b2dc' },
-  WATERWAY: { stroke: '#86b2dc', weight: 3 },
-  PATH: { stroke: '#c9b48e', weight: 2 },
-  'ROAD-MINOR': { stroke: '#a7a399', weight: 6 },
-  'ROAD-MAJOR': { stroke: '#8f8b82', weight: 9 },
-  RAIL: { stroke: '#6b625a', weight: 3 },
-  BRIDGE: { stroke: '#8f8b82', weight: 7 },
+  PATH: { stroke: '#c9b48e', weight: 0, fill: '#c9b48e' },
+  'ROAD-SURFACE': { stroke: '#a7a399', weight: 0, fill: '#a7a399' },
+  RAIL: { stroke: '#6b625a', weight: 0, fill: '#6b625a' },
+  BRIDGE: { stroke: '#8f8b82', weight: 0, fill: '#8f8b82' },
   BUILDINGS: { stroke: '#b9b3a8', weight: 0, fill: '#b9b3a8' },
 };
 

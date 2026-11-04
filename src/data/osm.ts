@@ -30,7 +30,8 @@ function query(b: { west: number; south: number; east: number; north: number }):
   wr["building"]${bb};
   way["highway"]${bb};
   way["railway"~"^(rail|light_rail|tram|narrow_gauge|preserved|disused)$"]${bb};
-  way["waterway"~"^(river|canal|stream|brook|drain|ditch|weir)$"]${bb};
+  way["waterway"~"^(river|canal|stream|brook|drain|ditch)$"]${bb};
+  way["barrier"~"^(wall|retaining_wall|city_wall|fence)$"]${bb};
   wr["natural"~"^(water|wood|scrub|grassland|heath|wetland)$"]${bb};
   wr["waterway"="riverbank"]${bb};
   wr["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|allotments|village_green|orchard|basin|reservoir)$"]${bb};
@@ -80,7 +81,8 @@ function lineKind(t: Record<string, string>): LineKind | null {
     return null;
   }
   if (t.railway) return 'rail';
-  if (t.waterway) return /^(river|canal)$/.test(t.waterway) ? 'river' : 'stream';
+  if (t.waterway) return /^(river|canal)$/.test(t.waterway) ? 'river' : /^(stream|brook|drain|ditch)$/.test(t.waterway) ? 'stream' : null;
+  if (/^(wall|retaining_wall|city_wall|fence)$/.test(t.barrier ?? '')) return 'wall';
   return null;
 }
 

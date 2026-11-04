@@ -2,9 +2,10 @@
 
 A static web app (GitHub Pages, no backend) that builds architectural site models and drawings for anywhere in England, using Environment Agency LIDAR and OpenStreetMap. Tuned for Bath.
 
-- **3D:** terrain plus LOD1 building blocks (flat-roofed extrusions), with an optional draped map texture → OBJ (Rhino/AutoCAD), watertight STL (3D printing).
-- **2D:** contours, building footprints, roads, paths, rail, rivers, water, parks, woodland, bridges, trees → SVG, PNG, DXF (AutoCAD R12).
-- **Physical models:** laser-cut contour stack DXF in mm at model scale.
+- **3D model, one object per thing:** terrain, buildings, roads, paths, railways, rivers and water, parks, woodland, squares, bridges, walls and fences, and trees. Each is a separate layer, and each building, tree and bridge is its own named object → OBJ (Rhino/Blender), per-layer STL (3D printing), polyface-mesh DXF (AutoCAD/Rhino).
+- **You choose the detail:** every feature can be switched off; buildings can be blocks (LOD1), fitted pitched roofs (LOD1.5) or the LIDAR roof surface (LOD2-raw); terrain and feature meshes can be coarsened to a triangle budget.
+- **2D:** contours, footprints, road kerb lines, paths, rail, rivers and water as polygons, bridge decks, walls, roof ridges/hips, trees at crown radius → SVG, PNG, layered DXF.
+- **Physical models:** laser-cut contour stack DXF in mm at model scale; print-ready closed solids.
 - **Data:** the aligned dataset as GeoJSON (EPSG:27700) plus DTM/DSM ESRI ASCII grids.
 
 Everything runs in the browser. Data is fetched live from public APIs that allow browser access (CORS).
@@ -31,27 +32,44 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
    - OSM is traced from aerial imagery that can be 1–3 m out (about 1.75 m east in central Bath).
    - The app searches shifts of up to ±3 m for the one where OSM footprints best match LIDAR roofs (nDSM > 2.5 m), then shifts all OSM features.
    - Polygons are clipped to the site exactly with `polygon-clipping`.
-5. **Buildings (LOD1):**
-   - Ground = lowest DTM value under the footprint.
-   - Top = a chosen percentile of DSM values inside it: typical roof 70th, eaves 40th, ridge 95th.
-   - Fallbacks, in order: OSM `height`, then `building:levels`, then 7 m.
-   - Each block is a closed, outward-facing prism sunk 0.5 m into the terrain.
-6. **Terrain mesh:** a regular grid; the step is picked automatically to stay under about 1 M vertices. It can be closed with walls and a base for a watertight solid.
-7. **Contours:** marching squares on a smoothed grid of about 1.5 M cells, joined into polylines and simplified (Douglas–Peucker). Laser stacks use d3-contour's filled regions.
+5. **Buildings:**
+   - Ground = lowest DTM value under the footprint. Top = a chosen DSM percentile inside it (typical roof 70th, eaves 40th, ridge 95th). Fallbacks: OSM `height`, then `building:levels`, then 7 m.
+   - **LOD1** is a closed block sunk 0.5 m into the terrain.
+   - **LOD1.5** fits a flat, gable or hip roof to the footprint's oriented box by least squares against the DSM, and keeps it only if the RMS error is ≤ 1.2 m and the pitch is plausible. Stepped terraces on a hillside, and complex roofs, stay as blocks.
+   - **LOD2-raw** cuts the DSM grid to the footprint exactly (the roof edge follows the outline) with walls from the DSM. It looks like the real roofs but is noisy and not guaranteed watertight, so use it for visualisation.
+6. **Context features** (`src/process/context.ts`, `buffer.ts`, `scene.ts`):
+   - Roads, paths and rail are offset from their centrelines (Clipper): `width` tag, then `lanes` × 3.25 m, then a class default; merged per class so junctions become single outlines (these give the drawing kerb lines).
+   - Water = OSM water polygons + river centrelines that no polygon covers. The terrain is carved below the banks, and the water surface sits just under bank level.
+   - Roads, paths, rail, water and parks are draped on the terrain by cutting their triangles along the terrain grid, then closed into thin solids (`relief` mm at print scale) or left as lighter open surfaces.
+   - Bridge decks follow the lowest DSM across the deck, smoothed and kept within a gentle arch over the abutments. Walls and fences are thin solids. Tunnels are left out of 3D (dashed in drawings).
+   - Trees are local maxima of the canopy height model (DSM − DTM, minus buildings and bridges), with OSM tree points taking priority.
+7. **Terrain mesh:** a regular grid, averaged (not just point-sampled) when coarsened. The step is either set by you or the finest one within a triangle budget. It can be closed with walls and a base for a watertight solid.
+8. **Contours:** marching squares on a smoothed grid of about 1.5 M cells, joined into polylines and simplified (Douglas–Peucker). Laser stacks use d3-contour's filled regions.
 
 ## Export conventions
 
-- **OBJ:**
-  - Local origin at the site centre, rounded to 10 m (`origin.txt`); add it back to get BNG.
-  - Metres, Z-up (Rhino/AutoCAD) or Y-up.
-  - One object per building; terrain texture in `terrain.png`.
-- **STL:** binary; mm at the chosen scale (1:500 to 1:5000) with vertical exaggeration and a base thickness. Each body is closed.
-- **DXF:**
-  - AutoCAD R12, with named layers (`CONTOUR-MAJOR`, `BUILDINGS`, `ROAD-MINOR`, …).
-  - Contours are polylines at their elevation. Footprints are closed polylines at ground level, with thickness set to building height, so they show as 3D blocks in AutoCAD.
-  - Coordinates are true BNG by default.
+- **OBJ:** local origin at the site centre rounded to 10 m (`origin.txt`; add it back to get BNG), metres, Z-up or Y-up. One group (`g`) and material per layer, one object (`o`) per building/tree/bridge/wall. Either **one .obj per layer** (best for Rhino/CAD) or one combined file.
+- **STL:** one binary file per layer in a zip (or one merged file), mm at the chosen scale with vertical exaggeration and a base. All files share one origin and register when loaded together. Each layer is built from closed solids.
+- **3D DXF:** AutoCAD R12 polyface meshes, one entity per building/tree/bridge, terrain in tiles under AutoCAD's 32,767-vertex limit. Layers `TERRAIN`, `BUILDINGS`, `ROADS`, `PATHS`, `RAIL`, `WATER`, `GREEN`, `WOODLAND`, `PAVED`, `BRIDGES`, `WALLS`, `TREES`.
+- **2D DXF:** AutoCAD R12 with named layers (`ROAD-SURFACE`, `BUILDINGS`, `ROOF`, `WATER`, `BRIDGE`, `CONTOUR-MAJOR`, …). Contours are polylines at their elevation; footprints have thickness = building height; trees are INSERTs of a `TREE` block scaled to crown radius, so you can redefine the symbol. True BNG by default.
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
+
+## Choosing mesh size
+
+| Control | Effect |
+|---|---|
+| Terrain resolution / triangle budget | Grid step in metres, or the finest step within 0.1–4 M triangles. Coarser terrain is box-averaged. |
+| Roads, water & parks detail | Cell size (1–8 m) used to follow the terrain. |
+| LIDAR-roof detail | Downsamples the DSM for LOD2-raw roofs. |
+| Closed solids | Uncheck for open surfaces: roughly half the triangles for roads, water and parks. |
+
+The 3D view lists triangles per layer and warns above 4 M.
+
+## Known limits
+
+- **LOD2.2 (clean roof faces, dormers, chimneys) is not available in the browser.** It needs the EA LIDAR *point clouds* (multi-GB LAZ downloads, not served by the WCS) and a C++ reconstructor such as roofer. A desktop app is the way to get it.
+- Georgian terraces step down hillsides, so most central-Bath footprints do not fit a single gable/hip and stay as blocks at LOD1.5; use LOD2-raw for their real roofline.
 
 ## Develop
 

@@ -43,3 +43,38 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #view-drawing { overflow: auto; background: #888; }
 #view-drawing svg { display: block; margin: 16px auto; background: #fff; box-shadow: 0 2px 12px #0005; height: auto; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: #777; }
+
+/* ---- stepper panel ---- */
+details.step { border-top: 1px solid #e3e3e3; padding: 8px 0; }
+details.step > summary { cursor: pointer; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; list-style: none; display: flex; align-items: center; gap: 8px; padding: 2px 0 6px; }
+details.step > summary::-webkit-details-marker { display: none; }
+details.step > summary::after { content: '▾'; margin-left: auto; color: #888; }
+details.step:not([open]) > summary::after { content: '▸'; }
+.num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #e0006b; color: #fff; font-size: 12px; }
+details.step.disabled { opacity: 0.45; pointer-events: none; }
+details.step > .body { display: flex; flex-direction: column; gap: 8px; }
+details.sub { border: 1px solid #e6e6e6; border-radius: 6px; padding: 4px 8px; background: #fff; }
+details.sub > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: #444; padding: 2px 0; }
+details.sub[open] > summary { margin-bottom: 6px; }
+details.sub > p { margin: 0 0 6px; }
+details.sub > :not(summary) + :not(summary) { margin-top: 6px; }
+.badge { font-weight: 400; color: #e0006b; margin-left: 6px; }
+.presets { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: #555; }
+.presets button { padding: 3px 8px; border-radius: 12px; font-size: 12px; }
+table.features { border-collapse: collapse; width: 100%; }
+table.features td { padding: 3px 4px; border-bottom: 1px solid #eee; vertical-align: middle; }
+table.features td:first-child { width: 22px; }
+table.features td.opt { text-align: right; color: #777; font-size: 11px; }
+table.features select { max-width: 150px; font-size: 12px; }
+.buttons button { font-weight: 600; }
+button.stale { box-shadow: 0 0 0 3px #e0006b44; }
+h3 .hint { font-weight: 400; }
+a { color: #c0005b; }
+
+/* ---- 3D layer legend ---- */
+#legend { position: absolute; top: 10px; right: 10px; background: #fffffff0; border: 1px solid #ddd; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 8px #0002; font-size: 12px; min-width: 190px; }
+#legend h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; color: #666; letter-spacing: 0.04em; }
+#legend label { flex-direction: row; align-items: center; gap: 6px; padding: 1px 0; }
+#legend .n { margin-left: auto; color: #888; font-variant-numeric: tabular-nums; }
+#legend .total { border-top: 1px solid #eee; margin-top: 4px; padding-top: 4px; color: #555; }
+#legend .warn { color: #c00; }

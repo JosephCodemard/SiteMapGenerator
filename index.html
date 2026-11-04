@@ -10,139 +10,250 @@
   <aside id="panel">
     <header>
       <h1>UK Site Model</h1>
-      <p>Environment Agency LIDAR + OpenStreetMap → 3D site models and drawings. England only.</p>
+      <p>Environment Agency LIDAR + OpenStreetMap → layered 3D site models and drawings. England only.</p>
     </header>
 
-    <section>
-      <h2>1 · Area</h2>
-      <div class="row">
-        <input id="search" placeholder="Postcode, grid ref (ST 750 647) or E,N" />
-        <button id="go">Go</button>
+    <!-- ───────────── 1 · SITE ───────────── -->
+    <details class="step" open>
+      <summary><span class="num">1</span> Site</summary>
+      <div class="body">
+        <div class="row">
+          <input id="search" placeholder="Postcode, grid ref (ST 750 647) or E,N" />
+          <button id="go">Go</button>
+        </div>
+        <select id="preset"><option value="">Bath presets…</option></select>
+        <div class="row">
+          <button id="draw">Draw rectangle on map</button>
+          <label class="inline"><input type="checkbox" id="lidarOverlay" /> LIDAR hillshade</label>
+        </div>
+        <div id="areaInfo" class="hint"></div>
+        <details class="sub">
+          <summary>Exact coordinates (British National Grid)</summary>
+          <div class="grid4">
+            <label>Min E<input id="minE" type="number" step="1" /></label>
+            <label>Min N<input id="minN" type="number" step="1" /></label>
+            <label>Max E<input id="maxE" type="number" step="1" /></label>
+            <label>Max N<input id="maxN" type="number" step="1" /></label>
+          </div>
+        </details>
       </div>
-      <select id="preset"><option value="">Bath presets…</option></select>
-      <div class="row">
-        <button id="draw">Draw rectangle on map</button>
-        <label class="inline"><input type="checkbox" id="lidarOverlay" /> LIDAR hillshade</label>
-      </div>
-      <div class="grid4">
-        <label>Min E<input id="minE" type="number" step="1" /></label>
-        <label>Min N<input id="minN" type="number" step="1" /></label>
-        <label>Max E<input id="maxE" type="number" step="1" /></label>
-        <label>Max N<input id="maxN" type="number" step="1" /></label>
-      </div>
-      <div id="areaInfo" class="hint"></div>
-    </section>
+    </details>
 
-    <section>
-      <h2>2 · Data</h2>
-      <label><input type="checkbox" id="useDsm" checked /> LIDAR DSM (building heights)</label>
-      <label><input type="checkbox" id="useOsm" checked /> OpenStreetMap (buildings, roads, rail, water, parks, bridges)</label>
-      <label><input type="checkbox" id="alignOsm" checked /> Auto-align OSM to LIDAR (fixes 1–3 m imagery offsets)</label>
-      <button id="fetch" class="primary">Fetch &amp; align data</button>
-      <div id="summary" class="hint"></div>
-    </section>
+    <!-- ───────────── 2 · DATA ───────────── -->
+    <details class="step" open>
+      <summary><span class="num">2</span> Data</summary>
+      <div class="body">
+        <label title="Needed for building heights, roofs and trees"><input type="checkbox" id="useDsm" checked /> LIDAR surface (DSM) — building heights, roofs, trees</label>
+        <label><input type="checkbox" id="useOsm" checked /> OpenStreetMap — buildings, roads, rail, water, parks, walls</label>
+        <label><input type="checkbox" id="alignOsm" checked /> Auto-align OSM to LIDAR (fixes 1–3 m offsets)</label>
+        <details class="sub">
+          <summary>Overpass busy? Use your own OSM file</summary>
+          <p class="hint">Run your query in <a href="https://overpass-turbo.eu" target="_blank" rel="noopener">overpass-turbo.eu</a> (Export → raw OSM data as JSON), save it, and choose it here before fetching.</p>
+          <input type="file" id="osmFile" accept=".json,.geojson,application/json" />
+        </details>
+        <button id="fetch" class="primary">Fetch &amp; align data</button>
+        <div id="summary" class="hint"></div>
+      </div>
+    </details>
 
-    <section class="needs-data">
-      <h2>3 · 3D model</h2>
-      <div class="grid2">
-        <label>Mesh resolution
-          <select id="meshStep">
-            <option value="0">Auto</option><option value="1">1 m (full)</option><option value="2">2 m</option>
-            <option value="4">4 m</option><option value="8">8 m</option>
-          </select>
-        </label>
-        <label>Building height
-          <select id="heightMode">
-            <option value="0.7">LIDAR – typical roof</option>
-            <option value="0.4">LIDAR – eaves (lower)</option>
-            <option value="0.95">LIDAR – ridge (max)</option>
-            <option value="osm">OSM tags first</option>
-          </select>
-        </label>
-      </div>
-      <label><input type="checkbox" id="showBuildings" checked /> LOD1 buildings</label>
-      <label><input type="checkbox" id="drape" checked /> Drape map (roads, water, green) on terrain</label>
-      <label>Vertical exaggeration <span id="exagVal">1.0×</span>
-        <input type="range" id="exag" min="1" max="3" step="0.1" value="1" />
-      </label>
-      <button id="rebuild">Update model</button>
-      <h3>Export</h3>
-      <div class="grid2">
-        <label>OBJ up axis
-          <select id="objUp"><option value="z">Z up (Rhino, AutoCAD)</option><option value="y">Y up (Blender, SketchUp)</option></select>
-        </label>
-        <label class="inline"><input type="checkbox" id="objSolid" /> Closed solid</label>
-      </div>
-      <button id="exportObj">Download OBJ (.zip, with texture)</button>
-      <div class="grid2">
-        <label>Model scale
-          <select id="stlScale">
-            <option value="500">1:500</option><option value="1000" selected>1:1000</option><option value="1250">1:1250</option>
-            <option value="2500">1:2500</option><option value="5000">1:5000</option><option value="1">1:1 (metres)</option>
-          </select>
-        </label>
-        <label>Base (mm; m at 1:1)<input id="baseMm" type="number" value="3" min="0.5" step="0.5" /></label>
-      </div>
-      <div id="stlInfo" class="hint"></div>
-      <button id="exportStl">Download STL (watertight, for printing)</button>
-    </section>
+    <!-- ───────────── 3 · MODEL ───────────── -->
+    <details class="step needs-data" id="modelStep" open>
+      <summary><span class="num">3</span> Model — what to include</summary>
+      <div class="body">
+        <div class="presets">
+          <span>Quick start:</span>
+          <button data-preset="presentation" title="Everything, detailed roofs and trees">Presentation</button>
+          <button data-preset="print" title="Terrain, blocks, roads, water — sized for printing">3D print</button>
+          <button data-preset="cad" title="Light geometry, all layers separated">CAD context</button>
+          <button data-preset="terrain" title="Ground only">Terrain only</button>
+        </div>
 
-    <section class="needs-data">
-      <h2>4 · Drawings</h2>
-      <div class="grid3">
-        <label>Contour interval
-          <select id="interval">
-            <option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option>
-            <option value="5">5 m</option><option value="10">10 m</option>
-          </select>
-        </label>
-        <label>Major every
-          <select id="majorEvery"><option>4</option><option selected>5</option><option>10</option></select>
-        </label>
-        <label>Smoothing
-          <select id="smooth"><option value="0">None</option><option value="1" selected>Light</option><option value="3">Strong</option></select>
-        </label>
-      </div>
-      <details>
-        <summary>Layers</summary>
-        <div id="layers" class="layers"></div>
-      </details>
-      <div class="grid3">
-        <label>Scale
-          <select id="drawScale">
-            <option value="200">1:200</option><option value="500">1:500</option><option value="1000" selected>1:1000</option>
-            <option value="1250">1:1250</option><option value="2500">1:2500</option>
-          </select>
-        </label>
-        <label>PNG DPI
-          <select id="dpi"><option>150</option><option selected>300</option><option>600</option></select>
-        </label>
-        <label class="inline"><input type="checkbox" id="hillshade" /> Hillshade</label>
-      </div>
-      <div class="grid2">
-        <button id="previewDrawing">Preview drawing</button>
-        <button id="exportSvg">SVG</button>
-        <button id="exportPng">PNG</button>
-        <button id="exportDxf">DXF (AutoCAD/Rhino)</button>
-      </div>
-      <label>DXF coordinates
-        <select id="dxfOrigin"><option value="bng">True BNG (overlays OS mapping)</option><option value="local">Local origin (same as OBJ)</option></select>
-      </label>
-      <h3>Laser-cut contour stack</h3>
-      <div class="grid2">
-        <label>Layer interval (m)<input id="laserInterval" type="number" value="5" min="0.5" step="0.5" /></label>
-        <label>Layout
-          <select id="laserLayout"><option value="grid">Sheets side by side</option><option value="stacked">Stacked (at height)</option></select>
-        </label>
-      </div>
-      <div id="laserInfo" class="hint"></div>
-      <button id="exportLaser">Download laser-cut DXF (mm at model scale)</button>
-    </section>
+        <table class="features">
+          <tr>
+            <td><input type="checkbox" id="fTerrain" checked disabled /></td>
+            <td>Terrain</td>
+            <td class="opt" id="terrainInfo"></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" id="fBuildings" checked data-persist /></td>
+            <td>Buildings</td>
+            <td class="opt">
+              <select id="lod" data-persist>
+                <option value="lod1">Blocks (LOD1)</option>
+                <option value="lod15">Pitched roofs (LOD1.5)</option>
+                <option value="lod2">LIDAR roofs (LOD2-raw)</option>
+              </select>
+            </td>
+          </tr>
+          <tr><td><input type="checkbox" id="fRoads" checked data-persist /></td><td>Roads</td><td class="opt">real width, kerbs</td></tr>
+          <tr><td><input type="checkbox" id="fPaths" checked data-persist /></td><td>Paths &amp; steps</td><td class="opt"></td></tr>
+          <tr><td><input type="checkbox" id="fRail" checked data-persist /></td><td>Railways</td><td class="opt"></td></tr>
+          <tr><td><input type="checkbox" id="fWater" checked data-persist /></td><td>Rivers &amp; water</td><td class="opt">carved into terrain</td></tr>
+          <tr><td><input type="checkbox" id="fGreen" checked data-persist /></td><td>Parks, woods, squares</td><td class="opt"></td></tr>
+          <tr><td><input type="checkbox" id="fBridges" checked data-persist /></td><td>Bridges</td><td class="opt">deck from LIDAR</td></tr>
+          <tr><td><input type="checkbox" id="fWalls" checked data-persist /></td><td>Walls &amp; fences</td><td class="opt"></td></tr>
+          <tr>
+            <td><input type="checkbox" id="fTrees" checked data-persist /></td>
+            <td>Trees</td>
+            <td class="opt">
+              <select id="treeMode" data-persist>
+                <option value="lidar">detected from LIDAR</option>
+                <option value="osm">OSM points only</option>
+              </select>
+            </td>
+          </tr>
+        </table>
 
-    <section class="needs-data">
-      <h2>5 · Raw dataset</h2>
-      <button id="exportData">Download aligned dataset (.zip: GeoJSON BNG + DTM/DSM .asc)</button>
-    </section>
+        <details class="sub" open>
+          <summary>Mesh size <span id="meshSummary" class="badge"></span></summary>
+          <p class="hint">Smaller meshes download faster and open more easily in CAD. Terrain is averaged (not just thinned) when it is coarsened.</p>
+          <div class="grid2">
+            <label>Terrain resolution
+              <select id="terrainStep" data-persist>
+                <option value="0">Auto (triangle budget)</option>
+                <option value="1">1 m (full LIDAR)</option><option value="2">2 m</option><option value="3">3 m</option>
+                <option value="5">5 m</option><option value="10">10 m</option><option value="20">20 m</option>
+              </select>
+            </label>
+            <label>Triangle budget (auto)
+              <select id="maxTris" data-persist>
+                <option value="100000">0.1 M — very light</option>
+                <option value="250000">0.25 M — light</option>
+                <option value="500000" selected>0.5 M — balanced</option>
+                <option value="1000000">1 M — detailed</option>
+                <option value="2000000">2 M — high</option>
+                <option value="4000000">4 M — maximum</option>
+              </select>
+            </label>
+            <label>Roads, water &amp; parks detail
+              <select id="featureStep" data-persist>
+                <option value="0">Auto</option><option value="1">1 m (fine)</option><option value="2">2 m</option><option value="4">4 m</option><option value="8">8 m (coarse)</option>
+              </select>
+            </label>
+            <label>LIDAR-roof detail (LOD2)
+              <select id="roofStep" data-persist>
+                <option value="1">1 m (full)</option><option value="2">2 m</option><option value="3">3 m</option>
+              </select>
+            </label>
+          </div>
+          <label title="Closed solids are print-ready; open surfaces halve the triangles of roads, water and parks."><input type="checkbox" id="solids" checked data-persist /> Roads, water &amp; parks as closed solids (uncheck for lighter surfaces)</label>
+        </details>
+
+        <details class="sub">
+          <summary>Scale &amp; relief</summary>
+          <div class="grid2">
+            <label>Model scale
+              <select id="stlScale" data-persist>
+                <option value="200">1:200</option><option value="500">1:500</option><option value="1000" selected>1:1000</option><option value="1250">1:1250</option>
+                <option value="2500">1:2500</option><option value="5000">1:5000</option><option value="1">1:1 (metres)</option>
+              </select>
+            </label>
+            <label>Vertical exaggeration <span id="exagVal">1.0×</span>
+              <input type="range" id="exag" min="1" max="3" step="0.1" value="1" />
+            </label>
+            <label>Road / park relief (mm)<input id="reliefMm" type="number" value="0.4" min="0.1" step="0.1" data-persist /></label>
+            <label>River depth (mm, 0 = off)<input id="waterMm" type="number" value="1" min="0" step="0.5" data-persist /></label>
+          </div>
+          <label>Building height
+            <select id="heightMode" data-persist>
+              <option value="0.7">LIDAR – typical roof</option>
+              <option value="0.4">LIDAR – eaves (lower)</option>
+              <option value="0.95">LIDAR – ridge (max)</option>
+              <option value="osm">OSM tags first</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="drape" data-persist /> Colour the terrain with the plan (texture)</label>
+        </details>
+
+        <button id="rebuild" class="primary">Update model</button>
+      </div>
+    </details>
+
+    <!-- ───────────── 4 · EXPORT ───────────── -->
+    <details class="step needs-data" open>
+      <summary><span class="num">4</span> Export</summary>
+      <div class="body">
+        <h3>3D model <span class="hint">— every layer is a separate object</span></h3>
+        <div class="grid2">
+          <label>File structure
+            <select id="structure" data-persist>
+              <option value="layers">One file per layer (best for Rhino / CAD)</option>
+              <option value="combined">Single file with layer groups</option>
+            </select>
+          </label>
+          <label>OBJ up axis
+            <select id="objUp" data-persist><option value="z">Z up (Rhino, AutoCAD)</option><option value="y">Y up (Blender, SketchUp)</option></select>
+          </label>
+          <label>Base thickness (mm; m at 1:1)<input id="baseMm" type="number" value="3" min="0.5" step="0.5" data-persist /></label>
+          <label class="inline"><input type="checkbox" id="objSolid" data-persist /> OBJ terrain as closed solid</label>
+        </div>
+        <div id="stlInfo" class="hint"></div>
+        <div class="grid3 buttons">
+          <button id="exportObj" title="Wavefront OBJ + materials. Rhino, Blender, SketchUp.">OBJ</button>
+          <button id="exportStl" title="Watertight STL, one file per layer, ready to slice.">STL</button>
+          <button id="exportDxf3d" title="AutoCAD / Rhino polyface meshes on named layers.">DXF 3D</button>
+        </div>
+        <label class="inline"><input type="checkbox" id="stlMerge" data-persist /> STL: merge all layers into one file</label>
+
+        <h3>Drawings</h3>
+        <div class="grid3">
+          <label>Contour interval
+            <select id="interval" data-persist>
+              <option value="0.5">0.5 m</option><option value="1" selected>1 m</option><option value="2">2 m</option>
+              <option value="5">5 m</option><option value="10">10 m</option>
+            </select>
+          </label>
+          <label>Major every
+            <select id="majorEvery" data-persist><option>4</option><option selected>5</option><option>10</option></select>
+          </label>
+          <label>Smoothing
+            <select id="smooth" data-persist><option value="0">None</option><option value="1" selected>Light</option><option value="3">Strong</option></select>
+          </label>
+        </div>
+        <details class="sub">
+          <summary>Drawing layers</summary>
+          <div id="layers" class="layers"></div>
+        </details>
+        <div class="grid3">
+          <label>Scale
+            <select id="drawScale" data-persist>
+              <option value="200">1:200</option><option value="500">1:500</option><option value="1000" selected>1:1000</option>
+              <option value="1250">1:1250</option><option value="2500">1:2500</option>
+            </select>
+          </label>
+          <label>PNG DPI
+            <select id="dpi" data-persist><option>150</option><option selected>300</option><option>600</option></select>
+          </label>
+          <label class="inline"><input type="checkbox" id="hillshade" data-persist /> Hillshade</label>
+        </div>
+        <div class="grid2 buttons">
+          <button id="previewDrawing">Preview drawing</button>
+          <button id="exportSvg">SVG</button>
+          <button id="exportPng">PNG</button>
+          <button id="exportDxf" title="Layered 2D DXF: kerbs, buildings, trees as blocks, contours at elevation">DXF (AutoCAD/Rhino)</button>
+        </div>
+        <label>DXF coordinates (2D drawing and 3D mesh)
+          <select id="dxfOrigin" data-persist><option value="bng">True BNG (overlays OS mapping)</option><option value="local">Local origin (same as OBJ)</option></select>
+        </label>
+
+        <details class="sub">
+          <summary>Laser-cut contour stack</summary>
+          <div class="grid2">
+            <label>Layer interval (m)<input id="laserInterval" type="number" value="5" min="0.5" step="0.5" data-persist /></label>
+            <label>Layout
+              <select id="laserLayout" data-persist><option value="grid">Sheets side by side</option><option value="stacked">Stacked (at height)</option></select>
+            </label>
+          </div>
+          <div id="laserInfo" class="hint"></div>
+          <button id="exportLaser">Download laser-cut DXF (mm at model scale)</button>
+        </details>
+
+        <details class="sub">
+          <summary>Raw data</summary>
+          <button id="exportData">Aligned dataset (.zip: GeoJSON BNG + DTM/DSM .asc)</button>
+        </details>
+      </div>
+    </details>
 
     <pre id="log"></pre>
     <footer>
@@ -159,7 +270,10 @@
       <span id="busy" hidden>Working…</span>
     </nav>
     <div id="view-map" class="view active"></div>
-    <div id="view-model" class="view"><div class="empty">Fetch data to see the 3D model.</div></div>
+    <div id="view-model" class="view">
+      <div class="empty">Fetch data to see the 3D model.</div>
+      <div id="legend" hidden></div>
+    </div>
     <div id="view-drawing" class="view"><div class="empty">Fetch data, then “Preview drawing”.</div></div>
   </main>
   <script type="module" src="/src/main.ts"></script>
