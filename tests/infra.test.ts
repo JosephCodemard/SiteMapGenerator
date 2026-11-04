@@ -178,3 +178,16 @@ describe('imagery analysis', () => {
     expect(found.filter((f) => f.colour === 'yellow').length).toBe(1);
   });
 });
+
+describe('EA oblique photography index', () => {
+  const resp = { features: [{ geometry: { type: 'Point', coordinates: [343592.1, 124475.5] }, properties: { filename: 'Obliques_S14_064_140220_133423.jpg', dos: '2014-02-20T00:00:00Z', heading: 221, iva: 131, year: '2014', type: 'Incident Response', os_ref: 'ST4020' } }, { geometry: { type: 'Point' }, properties: {} }] };
+  it('parses the live WFS response shape and summarises it', async () => {
+    const { parseOblique, obliqueSummary, obliqueUrl } = await import('../src/data/oblique');
+    const photos = parseOblique(resp);
+    expect(photos).toHaveLength(1);
+    expect(photos[0]).toMatchObject({ heading: 221, date: '2014-02-20', tile: 'ST4020', type: 'Incident Response' });
+    expect(obliqueSummary(photos)).toContain('cannot be measured');
+    expect(obliqueSummary([])).toContain('no photos indexed');
+    expect(obliqueUrl({ minE: 1000, minN: 2000, maxE: 1100, maxN: 2100 }, 100)).toContain('bbox=900%2C1900%2C1200%2C2200%2Curn');
+  });
+});

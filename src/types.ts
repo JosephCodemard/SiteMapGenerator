@@ -84,6 +84,8 @@ export interface RoofFit {
   profile?: [number, number][];
   /** Mansard roofs: the short ends slope too (hipped) rather than standing as vertical gable / party walls. */
   hipped?: boolean;
+  /** Industrial / special roofs built from standard types: a barrel vault is a `mansard` profile with an arc, a sawtooth strip is a `shed`, a multi-span roof is a row of `gable`s. */
+  kind?: 'barrel' | 'sawtooth' | 'multi-gable';
   /** Where the shape came from: LIDAR fit, or an OSM `roof:shape` tag. */
   hint?: string;
 }
@@ -125,6 +127,8 @@ export interface SiteData {
   origin: XY;
   dtm: Raster;
   dsm: Raster | null;
+  /** EA oblique aerial photographs indexed near the site (aircraft positions only; see data/oblique.ts). */
+  obliques?: import('./data/oblique').ObliquePhoto[];
   /** Greenness 0-1 on a raster (from user imagery); roofs ignore LIDAR cells over vegetation. */
   vegetation?: Raster | null;
   /** Road paint found in user imagery (white / yellow blobs on the road surface). */

@@ -4,6 +4,7 @@ import { polygonArea } from '../process/shape';
 import { estimateOffset } from '../process/align';
 import { attachParts, buildingHeights, type HeightOptions } from '../process/buildings';
 import { fillNoData } from '../process/raster';
+import { fetchOblique, obliqueSummary } from './oblique';
 import type { BBox, BuildingPart, Raster, Ring, SiteData } from '../types';
 
 export const MAX_AREA_KM2 = 4;
@@ -86,6 +87,8 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
     fetchedAt: new Date().toISOString(),
     filledCells: filled,
   };
+  // Optional extra: which EA oblique photos exist nearby (never fatal).
+  try { site.obliques = await fetchOblique(bbox); log(obliqueSummary(site.obliques)); } catch { /* index unavailable: skip */ }
   return { site, inputs: { footprints, parts: osm?.parts ?? [] } };
 }
 
@@ -127,6 +130,7 @@ export function siteToGeoJson(site: SiteData): string {
   }
   for (const t of site.trees) features.push({ type: 'Feature', properties: { layer: 'tree' }, geometry: { type: 'Point', coordinates: t } });
   for (const q of site.points) features.push({ type: 'Feature', id: q.id, properties: { layer: q.kind, ...q.tags }, geometry: { type: 'Point', coordinates: q.p } });
+  for (const o of site.obliques ?? []) features.push({ type: 'Feature', properties: { layer: 'oblique-photo', filename: o.filename, heading: o.heading, iva: o.iva, date: o.date, survey: o.type, tile: o.tile, note: 'aircraft position, not the subject' }, geometry: { type: 'Point', coordinates: o.p } });
   if (site.shape) features.push({ type: 'Feature', properties: { layer: 'site' }, geometry: { type: 'Polygon', coordinates: [[...site.shape, site.shape[0]]] } });
   return JSON.stringify({
     type: 'FeatureCollection',

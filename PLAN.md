@@ -321,3 +321,22 @@ Requested: (1) better LIDAR roofs for Bath (churches, complex roofs, top floor i
 - SegFormer (Cityscapes weights, ONNX): road/sidewalk labels but trained on street-level photos, so it needs fine-tuning for aerial views.
 - OpenCV.js: the classical route (paint, edges, Hough) and what `process/imagery.ts` does without any model.
 Recommendation: keep the bring-your-own orthophoto path (done); add SAM click-to-trace for pavements and roofs as an opt-in step; do ML road/pavement extraction offline (Tile2Net) and import the polygons as GeoJSON.
+
+## 12. Iteration 4b (2026-11-04): industrial roofs, multi-level roofs, oblique photography, cut-line report
+
+| Item | Status |
+|---|---|
+| Cut-line button "still does not work" | **not reproducible on the current code.** The user's log (no "Now click the end…" line after Draw cut) matches the OLD handler; commit `4afc71e` with the fix was not pushed and no server was running. Re-tested on the user's exact path (fetch a site, Preview with no cut line, then draw and click-select) on both `vite` dev and `vite preview`: pass. Every build now logs `Build <commit> <time>` first, so a stale build is visible |
+| Industrial roofs | **done**: `fitPeriodic` finds a repeated section (period 4-15 m on either axis), classifies it as a row of gables (`kind multi-gable`), barrel vaults (`kind barrel`, an arc profile) or sawtooth (`kind sawtooth`, one sloping `shed` per tooth, the glazed faces being the steps between strips); a single barrel vault is also a candidate in `fitPart`. Tested on synthetic halls, and shown NOT to fire on 532 real Georgian roof parts (Royal Crescent / Circus) or a 533-building residential area. **Not yet seen on a real Bath factory**: Overpass timed out when fetching an industrial extract |
+| Multi-level roofs (house + extension) | **done**: `splitLevels` proposes cuts at roofline steps (>= 1.2 m) along both axes and keeps a cut only if the two pieces fit with < 65 % of the whole's RMS error; recursive to 2 levels. Each level is a separate closed part |
+| Mansards with windows | already in 4a; measured on real data: 55 of 57 fitted mansards in the Royal Crescent/Circus area receive dormers (213 in total, ~4 each). Windows set into the steep slope rather than projecting are not done |
+| EA oblique aerial photography | **usable as an index only**, see below |
+
+### Oblique aerial photography (Environment Agency, OGL) — what the data allows
+Checked against the dataset record and the live service on 2026-11-04:
+- **Photos**: JPEGs, delivered only as zipped downloads per 5 km OS tile through the Defra Data Services Platform. No per-image URL, no tile service: they cannot be shown in the app, or fetched by it.
+- **Index** (`survey-index-files` WFS layer `Oblique_photography_index_catalogue`, CORS `*`, no key): one point per photo = the AIRCRAFT position, with heading, an `iva` field (undocumented), date, survey type and tile. About 35 000 photos in England.
+- **No camera pose** beyond position and heading (no tilt, lens or focal length). So the photos cannot be measured, rectified, draped on the model, or used to fit roofs automatically.
+- **Coverage**: `Incident Response` (flood events 2012/2014) and `Other` (cliff-line monitoring). Within a 22 x 20 km box around Bath there are 105 photos, in rural flood areas to the south-east and west; **none within about 5 km of central Bath**. A 1 km Bath site will normally get "no photos indexed".
+- **What the app now does** (`data/oblique.ts`): looks up photos with an aircraft position within 1.5 km, logs how many, the survey types and which tiles to download, and writes them to the GeoJSON export as `oblique-photo` points.
+- **Honest use**: where photos exist, a human can read storeys, dormers and materials off them (and set `building:levels`, `roof:shape` in the OSM file, or a height override). Automatic use would need photogrammetry (e.g. OpenDroneMap/COLMAP) offline with the photos' EXIF, and 5-10 overlapping views of one building; the archive is not a survey.

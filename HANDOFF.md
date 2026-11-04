@@ -301,6 +301,13 @@ Full status table: PLAN.md section 10; imagery research: section 11. 156 tests (
 
 **Optional real-data test:** `BATH_DATA=<dir> npx vitest run tests/real-bath.test.ts` with `rc_dsm.tif`, `rc_dtm.tif` (EA WCS) in the directory; the Overpass extract is fetched once and cached. `tests/helpers/bath.ts` can build a `SiteData` offline for any area.
 
+### 7h-2. Later the same day
+- Roofs: `fitPeriodic` (industrial: multi-gable, barrel, sawtooth; runs BEFORE terrace splitting, which would otherwise cut a sawtooth at every glazed step), `splitLevels` (multi-level), barrel candidate in `fitPart`. `RoofFit.kind` labels them; their `type` stays gable / mansard / shed, so no new branches were needed in drawing/section code (barrel draws only its crown line). `complexRoofs` switches all of mansard / industrial / multi-level / surface fallback.
+- `data/oblique.ts`: EA oblique photo INDEX lookup (see PLAN section 12 for why it is an index only). Called from `fetchSite`, never fatal.
+- Build stamp: `__BUILD__` (vite.config.ts `define`) is logged first in the app log.
+- `tools/e2e/cut.mjs <out> <url> <osm.json>` now follows the user's path. If a user reports the cut tool broken, first check the `Build` line in their log.
+- Not validated: industrial roofs on a real factory (no extract was obtainable); mansards and multi-level splits have no ground truth.
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.

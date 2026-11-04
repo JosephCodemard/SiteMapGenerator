@@ -153,11 +153,15 @@ export interface PartOptions {
   mansards: boolean;
   /** Keep roofs that no standard shape fits (churches, vaults, domes) as the smoothed LIDAR surface instead of a flat block. */
   surfaceFallback: boolean;
+  /** Detect industrial roofs: repeated gables, sawtooth and barrel vaults (several spans across a big footprint). */
+  industrial: boolean;
+  /** Split a footprint into levels where the roof steps (a house with a lower extension). */
+  levels: boolean;
   /** Vegetation (0-1 greenness, from user imagery): LIDAR cells over trees are ignored when fitting roofs. */
   vegetation?: Raster | null;
 }
 
-export const DEFAULT_PART_OPTIONS: PartOptions = { stepThreshold: 0.8, maxRmse: 1.0, minArea: 12, mansards: true, surfaceFallback: true };
+export const DEFAULT_PART_OPTIONS: PartOptions = { stepThreshold: 0.8, maxRmse: 1.0, minArea: 12, mansards: true, surfaceFallback: true, industrial: true, levels: true };
 
 /** OSM `roof:shape` -> the fitted type it asks for. */
 const ROOF_TAG: Record<string, RoofFit['type']> = {
@@ -423,6 +427,24 @@ export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOpti
       cands.push({ fit: { type: 'shed', eaves: lo, ridge: hi, ...box, rmse: err, plane }, rank: 2, ok, type: 'shed' });
     }
   }
+  // Barrel vault (semi-circular or segmental): z = eaves + rise * arc(t), a two-parameter linear fit per frame.
+  if (opt.mansards && (ctx.want === undefined || ctx.want === 'mansard')) {
+    for (const { box: fb, pts } of frames) {
+      const { b: hw } = fb;
+      if (hw < 2.5 || hw > 16) continue;
+      const g = (q: Sample) => { const x = Math.min(1, Math.max(0, (hw - Math.abs(q.v)) / hw)); return Math.sqrt(Math.max(0, 1 - (1 - x) * (1 - x))); };
+      let sg = 0, sz = 0, sgg = 0, sgz = 0;
+      for (const q of pts) { const v = g(q); sg += v; sz += q.z; sgg += v * v; sgz += v * q.z; }
+      const den = n * sgg - sg * sg;
+      if (den < 1e-9) continue;
+      const rise = (n * sgz - sg * sz) / den, eaves = (sz - rise * sg) / n;
+      if (rise < 1.0 || rise > 1.1 * hw || eaves < ground + 2) continue;
+      const err = Math.sqrt(pts.reduce((acc, q) => acc + (eaves + rise * g(q) - q.z) ** 2, 0) / n);
+      const best = Math.min(flatErr * 0.75, ...cands.filter((c) => c.ok).map((c) => c.fit.rmse));
+      if (err > maxRmse || err > 0.7 * best || best - err < 0.15) continue;
+      cands.push({ fit: { type: 'mansard', kind: 'barrel', eaves, ridge: eaves + rise, ...fb, rmse: err, profile: arcProfile(eaves, rise, hw), hipped: false }, rank: 3, ok: true, type: 'mansard' });
+    }
+  }
   // Mansard: needs samples close to the wall, where the steep slope shows.
   if (opt.mansards && (ctx.want === undefined || ctx.want === 'mansard')) {
     const near = collect(region, dsm, box, 0.5, opt.vegetation);
@@ -457,7 +479,7 @@ export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOpti
   }
   // Lowest error wins; near-ties prefer the simpler shape (gable < hip < shed < mansard).
   // A mansard that beat the plain shapes on the near-wall samples wins outright (their errors are not comparable).
-  const man = usable.filter((c) => c.type === 'mansard').sort((p, q) => p.fit.rmse - q.fit.rmse)[0];
+  const man = usable.filter((c) => c.type === 'mansard' && !c.fit.kind).sort((p, q) => p.fit.rmse - q.fit.rmse)[0];
   if (man) return ctx.want ? { ...man.fit, hint: 'roof:shape' } : man.fit;
   usable.sort((p, q) => p.fit.rmse - q.fit.rmse);
   const best = usable[0];
@@ -521,18 +543,217 @@ function smoothedDsm(dsm: Raster): Raster {
   return s;
 }
 
+/** Quarter-ellipse profile of a barrel vault: eaves at t = 0, crown at t = hw (8 segments). */
+export function arcProfile(eaves: number, rise: number, hw: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let k = 0; k <= 8; k++) { const th = (k / 8) * (Math.PI / 2); out.push([hw * (1 - Math.cos(th)), eaves + rise * Math.sin(th)]); }
+  return out;
+}
+
+const mod = (x: number, m: number) => ((x % m) + m) % m;
+
+/**
+ * Industrial roofs: the same section repeated across a big footprint. Searches a period (4-15 m) along each axis,
+ * averages the LIDAR over one period, and accepts it when the periodic profile explains the roof far better than a
+ * flat top. The profile decides the kind:
+ * - peak mid-period, triangular -> a row of gables (multi-span / ridge-and-furrow);
+ * - peak mid-period, rounded    -> a row of barrel vaults;
+ * - peak at the end of the period -> sawtooth (a long slope then a vertical glazed face).
+ * Each period becomes its own closed part (footprint clipped to the strip), so partial end bays stay correct.
+ */
+export function fitPeriodic(region: Poly, dsm: Raster, opt: PartOptions): { poly: Poly; fit: RoofFit }[] | null {
+  let box;
+  try { box = orientedBox(region[0]); } catch { return null; }
+  if (areaOf(region) < 120) return null;
+  const samples = collect(region, dsm, box, 0.75, opt.vegetation);
+  const n = samples.length;
+  if (n < 80) return null;
+  const mean = samples.reduce((acc, q) => acc + q.z, 0) / n;
+  const flatErr = Math.sqrt(samples.reduce((acc, q) => acc + (q.z - mean) ** 2, 0) / n);
+  if (flatErr < 0.45) return null;
+  let best: { axis: 'u' | 'v'; P: number; err: number; prof: number[]; W: number; bins: number } | null = null;
+  for (const axis of ['u', 'v'] as const) {
+    const W = 2 * (axis === 'u' ? box.a : box.b);
+    const w = (q: Sample) => (axis === 'u' ? q.u : q.v) + W / 2; // 0..W
+    for (let P = 4; P <= 15 && P * 2 <= W + 0.5; P += 0.5) {
+      // Bin by phase (about one bin per metre: the LIDAR is 1 m); the profile is the mean per bin.
+      const BINS = Math.max(4, Math.min(16, Math.floor(P)));
+      const sum = new Array(BINS).fill(0), cnt = new Array(BINS).fill(0);
+      const bin = samples.map((q) => Math.min(BINS - 1, Math.floor((mod(w(q), P) / P) * BINS)));
+      samples.forEach((q, i) => { sum[bin[i]] += q.z; cnt[bin[i]]++; });
+      if (cnt.some((c) => c < 4)) continue;
+      const prof = sum.map((v, i) => v / cnt[i]);
+      let e2 = 0;
+      samples.forEach((q, i) => { e2 += (q.z - prof[bin[i]]) ** 2; });
+      const err = Math.sqrt(e2 / n);
+      const amp = Math.max(...prof) - Math.min(...prof);
+      if (amp < 1.2 || amp > 0.9 * P || err > 0.45 * flatErr) continue;
+      // Prefer the shortest period that explains the roof about as well as any (2P always fits if P does).
+      if (!best || err < best.err * 0.92) best = { axis, P, err, prof, W, bins: BINS };
+    }
+  }
+  if (!best) return null;
+  const { axis, P, prof, W, bins: BINS } = best;
+  const kv = prof.indexOf(Math.min(...prof)), kp = prof.indexOf(Math.max(...prof));
+  const rising = mod(kp - kv, BINS) / BINS; // fraction of the period from valley to crest
+  const symmetric = rising > 0.3 && rising < 0.7;
+  // Where a cell starts (w from the box centre): at the valley for a rising sawtooth, at the crest for a falling one,
+  // half a period before the crest for a symmetric roof (valleys sit between spans). Refined below.
+  const startBin0 = symmetric ? kp + 0.5 - BINS / 2 : rising >= 0.7 ? kv : kp;
+  const wOf = (q: Sample) => (axis === 'u' ? q.u : q.v) + W / 2;
+  const SHAPES = {
+    tri: (x: number) => 1 - Math.abs(2 * x - 1),
+    arc: (x: number) => Math.sqrt(Math.max(0, 1 - (1 - 2 * x) ** 2)),
+    up: (x: number) => x,
+    down: (x: number) => 1 - x,
+  };
+  /** z = z0 + A * shape(phase) by least squares: the exact crest height, which bin means undersample. */
+  const regress = (shape: (x: number) => number, startBin: number) => {
+    const cs = (startBin / BINS) * P;
+    let sg = 0, sz = 0, sgg = 0, sgz = 0;
+    for (const q of samples) { const g = shape(mod(wOf(q) - cs, P) / P); sg += g; sz += q.z; sgg += g * g; sgz += g * q.z; }
+    const den = n * sgg - sg * sg;
+    const A = den > 1e-9 ? (n * sgz - sg * sz) / den : 0, z0 = (sz - A * sg) / n;
+    let e2 = 0;
+    for (const q of samples) e2 += (z0 + A * shape(mod(wOf(q) - cs, P) / P) - q.z) ** 2;
+    return { z0, A, err: Math.sqrt(e2 / n), startBin };
+  };
+  // The crest bin is only good to about a bin: scan the phase a little either way.
+  const scan = (shape: (x: number) => number) => {
+    let bestR = regress(shape, startBin0);
+    for (let d = -1.5; d <= 1.5; d += 0.25) { const r = regress(shape, startBin0 + d); if (r.err < bestR.err) bestR = r; }
+    return bestR;
+  };
+  const tri = symmetric ? scan(SHAPES.tri) : null, arc = symmetric ? scan(SHAPES.arc) : null;
+  const saw = symmetric ? null : scan(rising >= 0.7 ? SHAPES.up : SHAPES.down);
+  const round = !!(tri && arc && arc.err < 0.7 * tri.err);
+  const chosen = symmetric ? (round ? arc! : tri!) : saw!;
+  const cellStart = (chosen.startBin / BINS) * P - W / 2;
+  const zv = chosen.z0, A = Math.abs(chosen.A);
+  if (A < 1.0 || chosen.err > 0.5 * flatErr) return null;
+  const cells: number[] = [];
+  for (let c = cellStart - Math.ceil(W / P + 1) * P; c < W / 2 + P; c += P) cells.push(c);
+  // Boundaries inside the footprint; a sliver at either end joins its neighbour.
+  const bounds = cells.filter((c) => c > -W / 2 + 0.3 * P && c < W / 2 - 0.3 * P);
+  const strips: { w0: number; w1: number; cell: number }[] = [];
+  const edges = [-W / 2 - 2, ...bounds, W / 2 + 2];
+  for (let k = 0; k + 1 < edges.length; k++) strips.push({ w0: edges[k], w1: edges[k + 1], cell: k === 0 ? (bounds[0] ?? W / 2) - P : edges[k] });
+  const [ax, ay] = box.axis;
+  const pt = (u: number, v: number): XY => [box.centre[0] + u * ax - v * ay, box.centre[1] + u * ay + v * ax];
+  const out: { poly: Poly; fit: RoofFit }[] = [];
+  for (const s of strips) {
+    const rectPoly: Ring = axis === 'u'
+      ? closeRing([pt(s.w0, -box.b - 2), pt(s.w1, -box.b - 2), pt(s.w1, box.b + 2), pt(s.w0, box.b + 2)])
+      : closeRing([pt(-box.a - 2, s.w0), pt(box.a + 2, s.w0), pt(box.a + 2, s.w1), pt(-box.a - 2, s.w1)]);
+    for (const piece of clip(region, rectPoly).filter((p) => areaOf(p) >= 3)) {
+      const mid = s.cell + P / 2;
+      let fit: RoofFit;
+      if (symmetric) {
+        // Nominal full cell, so a partial end bay still has its ridge in the right place.
+        const centre = axis === 'u' ? pt(mid, 0) : pt(0, mid);
+        const ridgeAxis: XY = axis === 'u' ? [-ay, ax] : [ax, ay];
+        const half = (axis === 'u' ? box.b : box.a) + 2;
+        fit = { type: 'gable', eaves: zv, ridge: zv + A, centre, axis: ridgeAxis, a: half, b: P / 2, rmse: chosen.err, kind: 'multi-gable' };
+        if (round) fit = { ...fit, type: 'mansard', kind: 'barrel', profile: arcProfile(zv, A, P / 2), hipped: false };
+      } else {
+        // Sawtooth: one plane per period along w (up or down the slope), steps between strips are the glazed faces.
+        const slope = (rising >= 0.7 ? 1 : -1) * (A / P);
+        const w0cell = s.cell;
+        const zAtCell = rising >= 0.7 ? zv : zv + A;
+        const gu = axis === 'u' ? slope : 0, gv = axis === 'v' ? slope : 0;
+        const c = zAtCell - slope * w0cell;
+        fit = { type: 'shed', eaves: zv, ridge: zv + A, ...box, rmse: chosen.err, plane: [c, gu, gv], kind: 'sawtooth' };
+      }
+      out.push({ poly: piece, fit });
+    }
+  }
+  return out.length >= 2 ? out : null;
+}
+
+/**
+ * Multi-level roofs (a house with a lower extension, a tower rising from a nave): cut the region across a roofline
+ * step and keep the cut when the two pieces fit far better than the whole. The step test is cheap (median profile
+ * along each axis); the decision is made by actually fitting both pieces.
+ */
+function splitLevels(region: Poly, dsm: Raster, ground: number, opt: PartOptions, depth = 0): Poly[] {
+  if (depth >= 2 || areaOf(region) < 2.5 * opt.minArea) return [region];
+  let box;
+  try { box = orientedBox(region[0]); } catch { return [region]; }
+  const whole = fitPart(region, dsm, ground, opt, {});
+  if (!whole || !Number.isFinite(whole.rmse) || whole.rmse < 0.55) return [region];
+  const samples = collect(region, dsm, box, 0.75, opt.vegetation);
+  if (samples.length < 40) return [region];
+  type Cut = { axis: 'u' | 'v'; t: number; step: number };
+  const cuts: Cut[] = [];
+  for (const axis of ['u', 'v'] as const) {
+    const half = axis === 'u' ? box.a : box.b;
+    const nb = Math.ceil(2 * half);
+    if (nb < 8) continue;
+    const buckets: number[][] = Array.from({ length: nb }, () => []);
+    for (const q of samples) buckets[Math.min(nb - 1, Math.max(0, Math.floor((axis === 'u' ? q.u : q.v) + half)))].push(q.z);
+    const med = buckets.map((z) => (z.length >= 3 ? median(z) : NaN));
+    for (let i = 0; i < nb; i++) if (Number.isNaN(med[i])) med[i] = med[i - 1] ?? med.find((v) => !Number.isNaN(v)) ?? 0;
+    for (let i = 3; i < nb - 3; i++) {
+      // Level change across i: compare the 2 slices either side (damps single noisy slices).
+      const step = Math.abs((med[i + 1] + med[i + 2]) / 2 - (med[i - 1] + med[i - 2]) / 2);
+      if (step >= 1.2) cuts.push({ axis, t: i - half, step });
+    }
+  }
+  cuts.sort((p, q) => q.step - p.step);
+  let bestPieces: Poly[] | null = null, bestErr = whole.rmse * 0.65;
+  const tried: Cut[] = [];
+  for (const c of cuts) {
+    if (tried.length >= 4) break;
+    if (tried.some((d) => d.axis === c.axis && Math.abs(d.t - c.t) < 2)) continue;
+    tried.push(c);
+    const { centre, axis: ax, a, b } = box;
+    const perp: XY = [-ax[1], ax[0]];
+    const dir = c.axis === 'u' ? ax : perp;
+    const rectFor = (lo: number, hi: number) => (c.axis === 'u' ? rect(centre, ax, lo, hi, -b - 1, b + 1) : rect(centre, ax, -a - 1, a + 1, lo, hi));
+    void dir;
+    const L = c.axis === 'u' ? a : b;
+    const pieces = [...clip(region, rectFor(-L - 1, c.t)), ...clip(region, rectFor(c.t, L + 1))].filter((p) => areaOf(p) >= opt.minArea);
+    if (pieces.length < 2) continue;
+    let w2 = 0, tot = 0;
+    for (const p of pieces) {
+      const f = fitPart(p, dsm, ground, opt, {});
+      if (!f || !Number.isFinite(f.rmse)) { w2 = Infinity; break; }
+      const ar = areaOf(p);
+      w2 += ar * f.rmse * f.rmse; tot += ar;
+    }
+    const err = Math.sqrt(w2 / tot);
+    if (err < bestErr) { bestErr = err; bestPieces = pieces; }
+  }
+  return bestPieces ? bestPieces.flatMap((p) => splitLevels(p, dsm, ground, opt, depth + 1)) : [region];
+}
+
 /** A region of a footprint together with what OSM says about it. */
-interface Region { poly: Poly; want?: RoofFit['type']; minHeight: number; tags: Record<string, string> }
+interface Region { poly: Poly; want?: RoofFit['type']; minHeight: number; tags: Record<string, string>; /** Already fitted (industrial strips). */ fit?: RoofFit }
 
 const wantOf = (tags: Record<string, string>): RoofFit['type'] | undefined => ROOF_TAG[(tags['roof:shape'] ?? '').toLowerCase()];
 
 /** Regions to fit: `building:part` volumes when OSM has them, otherwise the footprint split into terrace strips / rectangles. */
-function regionsOf(b: Building, dsm: Raster, opt: PartOptions): Region[] {
+function regionsOf(b: Building, dsm: Raster, opt: PartOptions, groundOf?: (r: Poly) => number): Region[] {
+  const parts = !!b.parts?.length;
   const foot: Poly = b.rings.map(closeRing);
   const split = (poly: Poly, tags: Record<string, string>, strips: boolean): Region[] => {
     const want = wantOf(tags);
+    const minHeight = parseFloat(tags.min_height ?? '') || 0;
+    // Industrial roofs first: a sawtooth would otherwise be cut into 'terrace' strips at every glazed step.
+    if (opt.industrial && !want) {
+      const periodic = fitPeriodic(poly.map(closeRing), dsm, opt);
+      if (periodic) return periodic.map((q) => ({ poly: q.poly, fit: q.fit, minHeight, tags }));
+    }
     const pieces = strips && !want ? terraceStrips(b, dsm, opt, poly) : [poly];
-    return pieces.flatMap((s) => decompose(s.map(closeRing), opt.minArea)).map((poly) => ({ poly, want, minHeight: parseFloat(tags.min_height ?? '') || 0, tags }));
+    const flat = pieces.flatMap((s) => decompose(s.map(closeRing), opt.minArea));
+    // A roof the standard shapes fit badly may be several levels (house + extension): split it where the roofline steps.
+    const out: Region[] = [];
+    for (const r of flat) {
+      const g = groundOf?.(r) ?? 0;
+      const levels = opt.levels && !want && !parts ? splitLevels(r, dsm, g, opt) : [r];
+      for (const poly of levels) out.push({ poly, want, minHeight, tags });
+    }
+    return out;
   };
   if (!b.parts?.length) return split(foot, b.tags, true);
   const out: Region[] = [];
@@ -552,14 +773,14 @@ function regionsOf(b: Building, dsm: Raster, opt: PartOptions): Region[] {
 /** Interpret one building's roof as a set of standard-shaped parts, or null if there is nothing to fit. */
 export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, opt: PartOptions = DEFAULT_PART_OPTIONS, withDetails = false): RoofPart[] | null {
   if (b.rings[0].length < 3) return null;
-  const regions = regionsOf(b, dsm, opt);
+  const regions = regionsOf(b, dsm, opt, (r) => groundUnder(r, dtm));
   const church = isChurch(b);
   const parts: RoofPart[] = [];
   const base = `building_${b.id.replace(/[^\w#-]/g, '_')}`;
   let k = 0;
-  for (const { poly: region, want, minHeight } of regions) {
+  for (const { poly: region, want, minHeight, fit: preset } of regions) {
     const ground = groundUnder(region, dtm) + minHeight;
-    let fit = fitPart(region, dsm, ground, opt, { want, church });
+    let fit = preset ?? fitPart(region, dsm, ground, opt, { want, church });
     if (!fit) {
       // Too few LIDAR samples (a tiny wing): keep it as a block at the building's height rather than leave a hole.
       let box;

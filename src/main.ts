@@ -971,6 +971,7 @@ function selectTab(name: string) {
   if (name === 'map') areaMap.map.resize();
 }
 
+log(`Build ${__BUILD__}`);
 const start = PRESETS[0];
 const areaMap = new AreaMap($('view-map'), [start.lon, start.lat]);
 areaMap.onChange = () => { /* shape tools report through onShape */ };

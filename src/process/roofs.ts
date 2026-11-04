@@ -166,6 +166,10 @@ export function roofLines(f: RoofFit): { ridge: [XY, XY] | null; hips: [XY, XY][
       ? { ridge: [pt(Math.sign(pa) * a, -b), pt(Math.sign(pa) * a, b)], hips: [], z: f.ridge }
       : { ridge: [pt(-a, Math.sign(pb) * b), pt(a, Math.sign(pb) * b)], hips: [], z: f.ridge };
   }
+  if (f.type === 'mansard' && f.profile && f.kind === 'barrel') {
+    // A vault: just its crown line (the arc has no break lines).
+    return { ridge: [pt(-a, 0), pt(a, 0)], hips: [], z: f.ridge };
+  }
   if (f.type === 'mansard' && f.profile) {
     // Break lines (where the steep slope meets the upper one) as closed rectangles, and the top edge / ridge.
     const lines: [XY, XY][] = [];

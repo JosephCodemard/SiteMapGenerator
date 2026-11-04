@@ -124,3 +124,64 @@ describe('scene with dormers', () => {
     expect(b.dormers!.length).toBeGreaterThan(0);
   });
 });
+
+describe('industrial and multi-level roofs', () => {
+  const big = raster(120, 80, () => 0);
+  const hall = (f: (x: number, y: number) => number) => raster(120, 80, (x, y) => (x < 10 || x > 90 || y < 10 || y > 50 ? 0 : f(x, y)));
+  const foot = [sq(1010, 2010, 1090, 2050)];
+  const types = (parts: ReturnType<typeof fitRoofParts>) => parts!.map((p) => `${p.fit.type}:${p.fit.kind ?? ''}`);
+
+  it('splits a wide hall of repeated gables into one gable per span', () => {
+    // 8 m spans along x, ridge along y: z = 7 + 2.4 * triangle(phase)
+    const dsm = hall((x) => 7 + 2.4 * (1 - Math.abs(2 * (((x - 10) % 8) / 8) - 1)));
+    const parts = fitRoofParts(bld('mg', foot, 10), dsm, big, origin)!;
+    expect(parts).toHaveLength(10);
+    expect(new Set(types(parts))).toEqual(new Set(['gable:multi-gable']));
+    for (const p of parts) { expect(isWatertight(p.mesh), p.name).toBe(true); expect(p.fit.ridge - p.fit.eaves).toBeGreaterThan(1.8); }
+  });
+
+  it('recognises a sawtooth roof and builds one sloping strip per tooth', () => {
+    // 10 m teeth rising along x then dropping vertically: z = 6 + 3 * phase
+    const dsm = hall((x) => 6 + 3 * (((x - 10) % 10) / 10));
+    const parts = fitRoofParts(bld('st', foot, 10), dsm, big, origin)!;
+    expect(parts.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(types(parts))).toEqual(new Set(['shed:sawtooth']));
+    for (const p of parts) expect(isWatertight(p.mesh), p.name).toBe(true);
+  });
+
+  it('recognises repeated barrel vaults and a single vault', () => {
+    const arc = (t: number) => Math.sqrt(Math.max(0, 1 - (1 - 2 * t) ** 2));
+    const rep = fitRoofParts(bld('bv', foot, 11), hall((x) => 6 + 4 * arc(((x - 10) % 10) / 10)), big, origin)!;
+    expect(rep.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(types(rep))).toEqual(new Set(['mansard:barrel']));
+    for (const p of rep) expect(isWatertight(p.mesh), p.name).toBe(true);
+    // One semi-circular vault, 12 m span, across a 30 m shed.
+    const single = raster(80, 60, (x, y) => (x < 10 || x > 40 || y < 10 || y > 22 ? 0 : 6 + 5.5 * Math.sqrt(Math.max(0, 1 - ((y - 16) / 6) ** 2))));
+    const one = fitRoofParts(bld('one', [sq(1010, 2010, 1040, 2022)], 12), single, flat0, origin)!;
+    expect(one.some((p) => p.fit.kind === 'barrel')).toBe(true);
+    expect(isWatertight(one.find((p) => p.fit.kind === 'barrel')!.mesh)).toBe(true);
+  });
+
+  it('does not turn an ordinary gabled terrace house or a flat roof into an industrial roof', () => {
+    const gable = raster(80, 60, (x, y) => (x < 10 || x > 40 || y < 10 || y > 22 ? 0 : 8 + 0.6 * (6 - Math.abs(y - 16))));
+    expect(types(fitRoofParts(bld('g', [sq(1010, 2010, 1040, 2022)]), gable, flat0, origin))).toEqual(['gable:']);
+    const flat = hall(() => 9);
+    expect(types(fitRoofParts(bld('f', foot, 9), flat, big, origin))).toEqual(['flat:']);
+  });
+
+  it('splits a house and its lower flat extension into two levels', () => {
+    // 12 x 8 m gabled house (eaves 6, ridge 9.6, ridge along x) + 8 x 8 m flat extension at z = 3.5 to the east.
+    const dsm = raster(80, 60, (x, y) => {
+      if (y < 10 || y > 18) return 0;
+      if (x >= 10 && x <= 22) return 6 + 0.9 * (4 - Math.abs(y - 14));
+      if (x > 22 && x <= 30) return 3.5;
+      return 0;
+    });
+    const L = [[[1010, 2010], [1030, 2010], [1030, 2018], [1010, 2018]]] as [number, number][][];
+    const parts = fitRoofParts(bld('ext', L, 9), dsm, flat0, origin)!;
+    expect(parts.length).toBe(2);
+    const heights = parts.map((p) => p.fit.ridge).sort((p, q) => p - q);
+    expect(heights[0]).toBeLessThan(4.2); expect(heights[1]).toBeGreaterThan(8.5);
+    for (const p of parts) expect(isWatertight(p.mesh), p.name).toBe(true);
+  });
+});

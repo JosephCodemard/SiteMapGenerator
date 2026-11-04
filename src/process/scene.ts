@@ -344,7 +344,7 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): { bu
     b.roof = undefined;
     b.roofParts = undefined;
     if (s.buildings === 'lod2fit' && dsm) {
-      const ps = fitRoofParts(b, dsm, site.dtm, origin, { ...DEFAULT_PART_OPTIONS, mansards: s.complexRoofs, surfaceFallback: s.complexRoofs, vegetation: site.vegetation }, s.roofDetails);
+      const ps = fitRoofParts(b, dsm, site.dtm, origin, { ...DEFAULT_PART_OPTIONS, mansards: s.complexRoofs, surfaceFallback: s.complexRoofs, industrial: s.complexRoofs, levels: s.complexRoofs, vegetation: site.vegetation }, s.roofDetails);
       if (ps) {
         b.roofParts = ps.map((p) => p.fit);
         b.dormers = undefined;
