@@ -57,6 +57,12 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
 
+## More 3D formats, booleans and facades
+
+- **GLB** (glTF 2.0 binary, Y-up, metres): a node per layer, a child node per building/tree/bridge, a material per layer. **3MF**: one coloured object per layer in mm at your model scale (slicers keep names and colours). **Rhino 3DM**: Rhino layers with colours, one named mesh object per building/tree/…, building **user text** (OSM id, heights, levels, roof types, listing), origin and CRS in document strings; the 2.5 MB WASM loads only when you export. Verified by reading each file back (trimesh for GLB/3MF, rhino3dm for 3DM).
+- **Manifold booleans** (manifold-3d WASM, loaded on demand): *Union overlapping buildings* merges OSM's overlapping building solids into clean ones (per-building objects are lost, so it's an option); *fuse buildings into the terrain solid* (STL/3MF) gives one printable body. Parts that aren't closed solids are skipped and reported.
+- **Facade detail** (off by default, **procedural, not surveyed**): string courses at every floor line, a window per bay (default 1.2 m) per storey on every free wall, doors at OSM/inferred entrances; walls shared with a neighbour get nothing; a box budget keeps it light. Storeys come from `building:levels` or height / 3.2 m. Layers `FACADE-BANDS`, `FACADE-WINDOWS`, `FACADE-DOORS`. There is no open elevation imagery, so this adds *data-driven* detail, not photographic detail; Historic England listing text is not parsed.
+
 ## Drawings, sheets and CAD standards (step 5)
 
 - **Drawing types:** *Site plan*, *Site location plan* (defaults to 1:1250, red-line boundary you draw on the map, else the site outline), *Roof plan* (footprints, ridges/hips, pitch angles, heights), and **sections / elevations** from a cut line drawn on the map (several allowed, A–A, B–B).

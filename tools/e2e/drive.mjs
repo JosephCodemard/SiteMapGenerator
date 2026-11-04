@@ -79,7 +79,7 @@ await page.waitForFunction(() => document.getElementById('busy').hidden && docum
 await page.waitForTimeout(1000);
 await page.screenshot({ path: `${out}/3-drawing.png` });
 
-const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportSvg', 'exportPng', 'exportDxf', 'exportPdf', 'secSvg', 'secDxf', 'exportLaser', 'exportData'];
+const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportGlb', 'export3mf', 'export3dm', 'exportSvg', 'exportPng', 'exportDxf', 'exportPdf', 'secSvg', 'secDxf', 'exportLaser', 'exportData'];
 for (const id of exports) {
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click(`#${id}`)]);
   const p = `${out}/${dl.suggestedFilename()}`;
@@ -87,6 +87,10 @@ for (const id of exports) {
   console.log('download', id, dl.suggestedFilename());
   await idle();
 }
+// Manifold options: union buildings and fuse into one STL solid.
+await page.check('#solidUnion'); await page.check('#stlFuse');
+{ const [d] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#exportStl')]); await d.saveAs(`${out}/fused_${d.suggestedFilename()}`); console.log('download fused', d.suggestedFilename()); await idle(); }
+await page.uncheck('#solidUnion'); await page.uncheck('#stlFuse');
 // R12 + NCS layer names as well.
 await page.selectOption('#dxfFormat', 'r12'); await page.selectOption('#layerScheme', 'ncs');
 { const [d] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#exportDxf')]); await d.saveAs(`${out}/ncs_${d.suggestedFilename()}`); await idle(); }

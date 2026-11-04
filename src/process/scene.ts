@@ -4,6 +4,8 @@ import { drapeSurface, mergeMeshes, rasterizePolygons, solidWithFlatFloor, solid
 import { buildingsMesh, stepForTriangles, terrainGrid, terrainMesh, type Mesh, type TerrainGrid } from './mesh';
 import { adaptiveTerrain } from './rtin';
 import { polylineLength, resample, ribbonSolid } from './ribbon';
+import { buildFacades } from './facades';
+import { findEntrances } from '../analysis/entrances';
 import { buildMarkings } from './markings';
 import { fitRoofParts } from './roofparts';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh, roofRaster } from './roofs';
@@ -13,7 +15,7 @@ import type { Building, Raster, SiteData } from '../types';
 // ------------------------------------------------------------------ layers
 
 export type LayerId =
-  | 'terrain' | 'buildings' | 'details' | 'markings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
+  | 'terrain' | 'buildings' | 'details' | 'facade' | 'windows' | 'doors' | 'markings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
 
 export interface LayerDef {
   id: LayerId;
@@ -30,6 +32,9 @@ export const MODEL_LAYERS: LayerDef[] = [
   { id: 'buildings', label: 'Buildings', cad: 'BUILDINGS', color: '#f4f1ea' },
   { id: 'details', label: 'Chimneys & parapets', cad: 'ROOF-DETAIL', color: '#cfc7b8' },
   { id: 'roads', label: 'Roads', cad: 'ROADS', color: '#8f8b82' },
+  { id: 'facade', label: 'Facade bands', cad: 'FACADE-BANDS', color: '#d9d2c3' },
+  { id: 'windows', label: 'Windows', cad: 'FACADE-WINDOWS', color: '#7a96ad' },
+  { id: 'doors', label: 'Doors', cad: 'FACADE-DOORS', color: '#6b4a2f' },
   { id: 'markings', label: 'Road markings', cad: 'ROAD-MARKINGS', color: '#f6f6f2' },
   { id: 'paths', label: 'Paths', cad: 'PATHS', color: '#c9b48e' },
   { id: 'rail', label: 'Railways', cad: 'RAIL', color: '#6b625a' },
@@ -78,6 +83,8 @@ export interface ModelSettings {
   roofDetails: boolean;
   /** Road markings from OSM tags (centre/lane lines, zebras, cycle lanes, stop lines, double yellows). */
   markings: boolean;
+  /** Procedural facades (string courses, windows, doors): not surveyed. */
+  facades: boolean;
   /** Thickness of roads/paths/rail/green above the terrain, in mm at print scale. */
   reliefMm: number;
   /** How far rivers are carved below the banks, in mm at print scale (0 = don't carve). */
@@ -90,7 +97,7 @@ export interface ModelSettings {
 
 export const DEFAULT_SETTINGS: ModelSettings = {
   scaleDen: 1000, terrainStep: 0, terrainTolerance: 0.1, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
-  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true, markings: true,
+  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true, markings: true, facades: false,
   reliefMm: 0.4, waterDepthMm: 1, featureStep: 0, featureSolids: true,
 };
 
@@ -199,6 +206,14 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
     const bm = buildBuildings(site, s, notes);
     add('buildings', bm.buildings);
     if (bm.details.length) add('details', mergeMeshes(bm.details));
+    if (s.facades) {
+      await progress('Facades…');
+      const f = buildFacades(site.buildings, findEntrances(site.buildings, site.points, site.lines), origin);
+      if (f.courses) add('facade', f.courses);
+      if (f.windows) add('windows', f.windows);
+      if (f.doors) add('doors', f.doors);
+      notes.push(`Facades (procedural, not surveyed): ${f.stats.windows} windows, ${f.stats.doors} doors, ${f.stats.courses} bands${f.stats.capped ? ' — capped to keep the model light' : ''}.`);
+    }
   }
 
   // ---- draped context features

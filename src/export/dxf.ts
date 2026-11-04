@@ -172,7 +172,7 @@ export function writeDxfMesh(objects: SceneObject[], bbox: BBox, opts: DxfMeshOp
   const maxFaces = opts.maxFaces ?? 8000;
   const used = MODEL_LAYERS.filter((l) => objects.some((ob) => ob.layer === l.id));
   const aci: Record<string, number> = {
-    terrain: 8, buildings: 7, markings: 7, details: 9, roads: 251, paths: 30, rail: 250, water: 150, green: 82, wood: 94, paved: 254, bridges: 1, walls: 32, trees: 96,
+    terrain: 8, buildings: 7, facade: 8, windows: 5, doors: 30, markings: 7, details: 9, roads: 251, paths: 30, rail: 250, water: 150, green: 82, wood: 94, paved: 254, bridges: 1, walls: 32, trees: 96,
   };
 
   g(0, 'SECTION'); g(2, 'HEADER');

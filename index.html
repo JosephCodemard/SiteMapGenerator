@@ -93,6 +93,7 @@
               </select>
             </td>
           </tr>
+          <tr><td><input type="checkbox" id="fFacades" data-persist /></td><td>Facade detail</td><td class="opt" title="Windows, doors, string courses: generated, not surveyed">procedural</td></tr>
           <tr><td><input type="checkbox" id="fRoads" checked data-persist /></td><td>Roads</td><td class="opt">real width, kerbs</td></tr>
           <tr><td><input type="checkbox" id="fMarkings" checked data-persist /></td><td>Road markings</td><td class="opt">from OSM tags</td></tr>
           <tr><td><input type="checkbox" id="fPaths" checked data-persist /></td><td>Paths &amp; steps</td><td class="opt"></td></tr>
@@ -286,7 +287,14 @@
           <button id="exportStl" title="Watertight STL, one file per layer, ready to slice.">STL</button>
           <button id="exportDxf3d" title="AutoCAD / Rhino polyface meshes on named layers.">DXF 3D</button>
         </div>
+        <div class="grid3 buttons">
+          <button id="exportGlb" title="glTF binary: Blender, web viewers, presentations (Y-up, metres)">GLB</button>
+          <button id="export3mf" title="3MF: coloured layers in mm for slicers (PrusaSlicer, Bambu Studio, Cura)">3MF</button>
+          <button id="export3dm" title="Rhino 3DM: layers, named objects, building user text">3DM</button>
+        </div>
         <label class="inline"><input type="checkbox" id="stlMerge" data-persist /> STL: merge all layers into one file</label>
+        <label class="inline" title="manifold-3d boolean union: overlapping OSM buildings become clean solids (per-building objects are lost)"><input type="checkbox" id="solidUnion" data-persist /> Union overlapping buildings (manifold)</label>
+        <label class="inline" title="One printable solid: terrain + buildings fused (STL/3MF)"><input type="checkbox" id="stlFuse" data-persist /> STL/3MF: fuse buildings into the terrain solid</label>
 
         <h3>Drawings</h3>
         <div class="grid3">

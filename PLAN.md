@@ -273,4 +273,7 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 | M4 section & elevation from a drawn cut line (SVG/PDF/DXF) | **done** (synthetic tests + real Pulteney run) |
 | M4 R2000 DXF (handles, LWPOLYLINE, HATCH, lineweights, true colour, blocks, XDATA), layer schemes | **done**: ezdxf strict read + audit 0 errors; paper-space layouts not done |
 | M4 shadow study sheet | **done** |
-| M5 – M6 | not started |
+| M5 GLB, 3MF, Rhino 3DM | **done**, verified by reading back (trimesh, rhino3dm) |
+| M5 manifold-3d union and fuse | **done**: 289 Pulteney buildings unioned and fused into one STL body (1 non-manifold edge in 98 k after float32 rounding) |
+| M5 procedural facades | **done**, tested; listing-text parsing not done |
+| M6 | not started |

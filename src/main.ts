@@ -21,7 +21,11 @@ import { restyle, type SchemeId } from './export/layers';
 import { svgsToPdf, type PdfPage } from './export/pdf';
 import { DEFAULT_BLOCK, fitScale, writeSheet, type Paper } from './export/sheet';
 import { buildSection, sectionLayers } from './process/section';
+import { writeGlb } from './export/gltf';
 import { writeObj } from './export/obj';
+import { writeRhino } from './export/rhino';
+import { writeThreeMf } from './export/threemf';
+import { fuse, unionParts } from './process/solidify';
 import { writeStl } from './export/stl';
 import { initAnalysis } from './ui/analysis';
 import { AreaMap } from './view/map';
@@ -222,6 +226,7 @@ function readSettings(): ModelSettings {
     trees: checked('fTrees') ? (sel('treeMode') as ModelSettings['trees']) : 'off',
     roofDetails: true,
     markings: checked('fMarkings'),
+    facades: checked('fFacades'),
     reliefMm: num('reliefMm') || DEFAULT_SETTINGS.reliefMm,
     waterDepthMm: num('waterMm'),
     featureStep: num('featureStep'),
@@ -453,8 +458,7 @@ async function exportStl() {
     const s = site!;
     const { k, exag, baseZ, unit } = stlParams();
     const t = { scale: k, zExaggeration: exag, zOffset: baseZ };
-    const named: [string, Mesh][] = [['TERRAIN', sc.terrainSolid(baseZ)]];
-    for (const o of sc.objects) if (o.layer !== 'terrain') named.push([layerDef(o.layer).cad, o.mesh]);
+    const named = await solidLayers(sc, baseZ);
     const scaleName = `1-${num('stlScale')}_${unit}`;
     if (checked('stlMerge')) {
       download(`site_${stamp()}_${scaleName}.stl`, writeStl(named.map(([, m]) => m), t));
@@ -466,6 +470,66 @@ async function exportStl() {
       'All files share one origin and register when loaded together. Layers are closed solids; overlapping shells (e.g. roads over terrain) are merged by your slicer. ' +
       'Trees and thin walls may be below printable size at small scales: leave those files out.'));
     download(`site_${stamp()}_stl_${scaleName}.zip`, new Blob([zip(files, 0) as BlobPart]));
+  });
+}
+
+/** Scene objects for export, optionally with overlapping buildings unioned (manifold-3d). */
+async function exportObjects(sc: Scene): Promise<Scene['objects']> {
+  if (!checked('solidUnion')) return sc.objects;
+  await stage('Merging buildings (manifold)');
+  const out: Scene['objects'] = [];
+  for (const o of sc.objects) {
+    if (o.layer !== 'buildings') { out.push(o); continue; }
+    const r = await unionParts(o.mesh, 'buildings_union');
+    log(`Union: ${r.merged} buildings merged${r.skipped.length ? `, ${r.skipped.length} skipped (not closed solids)` : ''}.`);
+    out.push({ layer: 'buildings', mesh: r.mesh });
+  }
+  return out;
+}
+
+/** Layers for solid-model exports (STL/3MF): closed terrain, and optionally buildings fused into it. */
+async function solidLayers(sc: Scene, baseZ: number): Promise<[string, Mesh][]> {
+  const objs = await exportObjects(sc);
+  const terrain = sc.terrainSolid(baseZ);
+  if (!checked('stlFuse')) return [['TERRAIN', terrain], ...objs.filter((o) => o.layer !== 'terrain').map((o) => [layerDef(o.layer).cad, o.mesh] as [string, Mesh])];
+  await stage('Fusing buildings into the terrain (manifold)');
+  const own = objs.find((o) => o.layer === 'buildings');
+  const bu = own ? (checked('solidUnion') ? { mesh: own.mesh } : await unionParts(own.mesh, 'buildings')) : null;
+  const fused = await fuse(bu ? [terrain, bu.mesh] : [terrain]);
+  log(`Fused ${fused.used} solids into one.`);
+  return [['MODEL', fused.mesh], ...objs.filter((o) => o.layer !== 'terrain' && o.layer !== 'buildings').map((o) => [layerDef(o.layer).cad, o.mesh] as [string, Mesh])];
+}
+
+async function exportGlb() {
+  if (!site) return;
+  await busy('Exporting GLB', async () => {
+    const sc = await ensureModel();
+    if (!sc) return;
+    download(`site_${stamp()}_model.glb`, new Blob([writeGlb(await exportObjects(sc))]), 'model/gltf-binary');
+  });
+}
+
+async function export3mf() {
+  if (!site) return;
+  await busy('Exporting 3MF', async () => {
+    const sc = await ensureModel();
+    if (!sc) return;
+    const { k, exag, baseZ } = stlParams();
+    const layers = await solidLayers(sc, baseZ);
+    const objects = layers.map(([name, mesh]) => ({ layer: (MODEL_LAYERS.find((l) => l.cad === name)?.id ?? 'terrain') as never, mesh }));
+    download(`site_${stamp()}_1-${num('stlScale')}.3mf`, new Blob([writeThreeMf(objects, { scale: k, zExaggeration: exag, zOffset: baseZ }) as BlobPart]), 'model/3mf');
+  });
+}
+
+async function export3dm() {
+  if (!site) return;
+  await busy('Exporting Rhino 3DM', async () => {
+    const sc = await ensureModel();
+    if (!sc) return;
+    const [lo] = minMax(site!.dtm.data);
+    const objects = (await exportObjects(sc)).map((o) => (o.layer === 'terrain' && checked('objSolid') ? { ...o, mesh: sc.terrainSolid(lo - 5) } : o));
+    const bytes = await writeRhino(objects, site!.buildings, site!.origin, [`Fetched ${site!.fetchedAt}`, 'Sources: EA LIDAR (OGL v3), OpenStreetMap (ODbL)']);
+    download(`site_${stamp()}.3dm`, new Blob([bytes as BlobPart]), 'application/octet-stream');
   });
 }
 
@@ -807,6 +871,9 @@ $('exag').oninput = () => {
 $('exportObj').onclick = exportObj;
 $('exportStl').onclick = exportStl;
 $('exportDxf3d').onclick = exportDxf3d;
+$('exportGlb').onclick = exportGlb;
+$('export3mf').onclick = export3mf;
+$('export3dm').onclick = export3dm;
 $('previewDrawing').onclick = previewDrawing;
 $('exportSvg').onclick = exportSvg;
 $('exportPng').onclick = exportPng;

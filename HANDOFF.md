@@ -259,6 +259,11 @@ Not done: analysis results are not yet embedded in drawing sheets (M4), and the 
 Gotchas: `layerSvg` is shared by both writers; the DXF section uses chainage/level coordinates (not BNG); R2000 files need BLOCK_RECORD/handles for ezdxf and AutoCAD, so keep that structure when editing; jspdf/svg2pdf.js are dynamically imported (build splits them). Installing a dependency prunes `npm i --no-save playwright`: reinstall it before running `tools/e2e/drive.mjs`.
 Not verified: opening the R2000 DXF in real AutoCAD/Rhino (ezdxf only); PDF rendering in Acrobat.
 
+## 7f. Iteration 3, milestone M5 (2026-11-04)
+
+`export/{gltf,threemf,rhino}.ts`, `process/{solidify,facades}.ts`, export UI for GLB/3MF/3DM + union/fuse options, facade layers. manifold-3d and rhino3dm are dynamically imported and their `.wasm` files are loaded with `?url` imports in the browser (vite bundles them); in Node (vitest) they load directly.
+Known: a fused STL can contain an inverted shell for an enclosed courtyard void (legitimate); facade windows on slopes use the building's lowest ground level, so uphill windows can sit slightly into the ground.
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.
