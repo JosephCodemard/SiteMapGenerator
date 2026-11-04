@@ -1,8 +1,9 @@
 import { intersection } from 'polygon-clipping';
 import { openRing, pointInRings, signedArea } from './clip';
-import { MeshBuilder, snap, solidWithFlatFloor, triangulate } from './geom';
+import { ClipperLib } from './buffer';
+import { MeshBuilder, boxMesh, snap, solidWithFlatFloor, triangulate } from './geom';
 import { buildingsMesh, type Mesh } from './mesh';
-import { edgeDistance, orientedBox, roofedBuildingMesh } from './roofs';
+import { edgeDistance, orientedBox, roofedBuildingMesh, roofZ } from './roofs';
 import type { Building, Raster, Ring, RoofFit, XY } from '../types';
 
 /**
@@ -20,6 +21,120 @@ export interface RoofPart {
   name: string;
   mesh: Mesh;
   fit: RoofFit;
+  /** Chimneys and parapets standing on this roof (own layer). */
+  details: { name: string; mesh: Mesh }[];
+}
+
+/** Fitted roof height at a BNG point. */
+export function roofHeightAt(f: RoofFit, e: number, n: number): number {
+  if (f.type === 'flat') return f.eaves;
+  const dx = e - f.centre[0], dy = n - f.centre[1];
+  const u = dx * f.axis[0] + dy * f.axis[1], v = -dx * f.axis[1] + dy * f.axis[0];
+  if (f.type === 'shed') { const [c, pa, pb] = f.plane!; return c + pa * u + pb * v; }
+  return roofZ(f.type, f.eaves, f.ridge, f.a, f.b, u, v);
+}
+
+const CHIMNEY_MIN = 0.9, CHIMNEY_MAX = 4.5, CHIMNEY_MAX_CELLS = 9;
+
+/**
+ * Chimneys: small clusters of DSM cells standing 0.9-4.5 m above the fitted roof. Each becomes a box over the
+ * cluster's extent, reaching up to its highest LIDAR return.
+ */
+export function chimneys(region: Poly, f: RoofFit, dsm: Raster, origin: XY, id: string): { name: string; mesh: Mesh }[] {
+  const cells = new Map<number, { e: number; n: number; z: number; base: number }>();
+  let inside = 0;
+  let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
+  for (const [e, n] of region[0]) { minE = Math.min(minE, e); maxE = Math.max(maxE, e); minN = Math.min(minN, n); maxN = Math.max(maxN, n); }
+  const i0 = Math.max(0, Math.floor((minE - dsm.minE) / dsm.res)), i1 = Math.min(dsm.width - 1, Math.ceil((maxE - dsm.minE) / dsm.res));
+  const j0 = Math.max(0, Math.floor((dsm.maxN - maxN) / dsm.res)), j1 = Math.min(dsm.height - 1, Math.ceil((dsm.maxN - minN) / dsm.res));
+  for (let j = j0; j <= j1; j++) {
+    const n = dsm.maxN - (j + 0.5) * dsm.res;
+    for (let i = i0; i <= i1; i++) {
+      const e = dsm.minE + (i + 0.5) * dsm.res;
+      if (!pointInRings(e, n, region) || edgeDistance(e, n, region) < 0.3) continue;
+      inside++;
+      const z = dsm.data[j * dsm.width + i], base = roofHeightAt(f, e, n);
+      if (z - base >= CHIMNEY_MIN && z - base <= CHIMNEY_MAX) cells.set(j * dsm.width + i, { e, n, z, base });
+    }
+  }
+  // A roof that is mostly "above" its fit is a bad fit, not a forest of chimneys.
+  if (!cells.size || cells.size > 0.25 * inside) return [];
+  const out: { name: string; mesh: Mesh }[] = [];
+  const seen = new Set<number>();
+  for (const [key] of cells) {
+    if (seen.has(key)) continue;
+    const comp: number[] = [], stack = [key];
+    seen.add(key);
+    while (stack.length) {
+      const k = stack.pop()!;
+      comp.push(k);
+      for (const d of [-1, 1, -dsm.width, dsm.width, -dsm.width - 1, -dsm.width + 1, dsm.width - 1, dsm.width + 1]) {
+        if (cells.has(k + d) && !seen.has(k + d)) { seen.add(k + d); stack.push(k + d); }
+      }
+    }
+    if (comp.length > CHIMNEY_MAX_CELLS) continue;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, top = -Infinity, base = Infinity;
+    for (const k of comp) {
+      const c = cells.get(k)!;
+      x0 = Math.min(x0, c.e); x1 = Math.max(x1, c.e); y0 = Math.min(y0, c.n); y1 = Math.max(y1, c.n);
+      top = Math.max(top, c.z); base = Math.min(base, c.base);
+    }
+    const h = dsm.res / 2 - 0.1;
+    out.push({
+      name: `chimney_${id}_${out.length + 1}`,
+      mesh: boxMesh(x0 - h - origin[0], y0 - h - origin[1], x1 + h - origin[0], y1 + h - origin[1], base - 0.3, top),
+    });
+  }
+  return out;
+}
+
+/** Shrink a polygon by `d` metres (Clipper), returns the inner outlines. */
+function inset(region: Poly, d: number): Ring[] {
+  const ox = region[0][0][0], oy = region[0][0][1], S = 100;
+  const co = new ClipperLib.ClipperOffset(2, 0.05 * S);
+  region.forEach((r, k) => {
+    const p = openRing(r).map(([e, n]) => ({ X: Math.round((e - ox) * S), Y: Math.round((n - oy) * S) }));
+    if ((signedArea(openRing(r)) > 0) !== (k === 0)) p.reverse();
+    co.AddPath(p, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+  });
+  const out: ClipperLib.Paths = [];
+  co.Execute(out, -d * S);
+  return out.map((p) => p.map((q) => [q.X / S + ox, q.Y / S + oy] as XY));
+}
+
+/**
+ * Parapet: on a flat roof, if the rim (0.3-1.1 m inside the wall) stands 0.35-1.8 m above the roof interior,
+ * add a 0.35 m thick wall around the edge up to the rim height.
+ */
+export function parapet(region: Poly, f: RoofFit, dsm: Raster, origin: XY, id: string): { name: string; mesh: Mesh } | null {
+  if (f.type !== 'flat') return null;
+  const rim: number[] = [], core: number[] = [];
+  let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
+  for (const [e, n] of region[0]) { minE = Math.min(minE, e); maxE = Math.max(maxE, e); minN = Math.min(minN, n); maxN = Math.max(maxN, n); }
+  const i0 = Math.max(0, Math.floor((minE - dsm.minE) / dsm.res)), i1 = Math.min(dsm.width - 1, Math.ceil((maxE - dsm.minE) / dsm.res));
+  const j0 = Math.max(0, Math.floor((dsm.maxN - maxN) / dsm.res)), j1 = Math.min(dsm.height - 1, Math.ceil((dsm.maxN - minN) / dsm.res));
+  for (let j = j0; j <= j1; j++) {
+    const n = dsm.maxN - (j + 0.5) * dsm.res;
+    for (let i = i0; i <= i1; i++) {
+      const e = dsm.minE + (i + 0.5) * dsm.res;
+      if (!pointInRings(e, n, region)) continue;
+      const d = edgeDistance(e, n, region), z = dsm.data[j * dsm.width + i];
+      if (d >= 0.3 && d <= 1.1) rim.push(z); else if (d > 1.6) core.push(z);
+    }
+  }
+  if (rim.length < 8 || core.length < 10) return null;
+  const h = median(rim) - median(core);
+  if (h < 0.35 || h > 1.8) return null;
+  const inner = inset(region, 0.35);
+  if (!inner.length) return null;
+  const top = f.eaves;
+  const local = (r: Ring) => openRing(r).map(([e, n]) => [e - origin[0], n - origin[1]] as XY);
+  const { pts, tris } = triangulate([local(region[0]), ...inner.map(local)]);
+  const mb = new MeshBuilder();
+  const ids = pts.map(([x, y]) => mb.vertex(snap(x), snap(y), top + h));
+  for (let t = 0; t < tris.length; t += 3) mb.tri(ids[tris[t]], ids[tris[t + 1]], ids[tris[t + 2]]);
+  if (!mb.idx.length) return null;
+  return { name: `parapet_${id}`, mesh: solidWithFlatFloor(mb.build(), top - 0.05) };
 }
 
 export interface PartOptions {
@@ -257,7 +372,7 @@ function groundUnder(region: Poly, dtm: Raster): number {
 }
 
 /** Interpret one building's roof as a set of standard-shaped parts, or null if there is nothing to fit. */
-export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, opt: PartOptions = DEFAULT_PART_OPTIONS): RoofPart[] | null {
+export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, opt: PartOptions = DEFAULT_PART_OPTIONS, withDetails = false): RoofPart[] | null {
   if (b.rings[0].length < 3) return null;
   const regions = terraceStrips(b, dsm, opt).flatMap((strip) => decompose(strip.map(closeRing), opt.minArea));
   const parts: RoofPart[] = [];
@@ -286,7 +401,15 @@ export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, 
     }
     if (!mesh.indices.length) continue;
     k++;
-    parts.push({ name: regions.length > 1 ? `${base}_${k}` : base, mesh, fit });
+    const partName = regions.length > 1 ? `${base}_${k}` : base;
+    const details: RoofPart['details'] = [];
+    if (withDetails) {
+      const id = partName.replace(/^building_/, '');
+      details.push(...chimneys(region, fit, dsm, origin, id));
+      const par = parapet(region, fit, dsm, origin, id);
+      if (par) details.push(par);
+    }
+    parts.push({ name: partName, mesh, fit, details });
   }
   return parts.length ? parts : null;
 }

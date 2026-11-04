@@ -12,7 +12,7 @@ import type { Building, Raster, SiteData } from '../types';
 // ------------------------------------------------------------------ layers
 
 export type LayerId =
-  | 'terrain' | 'buildings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
+  | 'terrain' | 'buildings' | 'details' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
 
 export interface LayerDef {
   id: LayerId;
@@ -27,6 +27,7 @@ export interface LayerDef {
 export const MODEL_LAYERS: LayerDef[] = [
   { id: 'terrain', label: 'Terrain', cad: 'TERRAIN', color: '#d8d3c4' },
   { id: 'buildings', label: 'Buildings', cad: 'BUILDINGS', color: '#f4f1ea' },
+  { id: 'details', label: 'Chimneys & parapets', cad: 'ROOF-DETAIL', color: '#cfc7b8' },
   { id: 'roads', label: 'Roads', cad: 'ROADS', color: '#8f8b82' },
   { id: 'paths', label: 'Paths', cad: 'PATHS', color: '#c9b48e' },
   { id: 'rail', label: 'Railways', cad: 'RAIL', color: '#6b625a' },
@@ -71,6 +72,8 @@ export interface ModelSettings {
   bridges: boolean;
   walls: boolean;
   trees: 'off' | 'osm' | 'lidar';
+  /** LOD2-fit only: model chimneys and parapets as separate objects. */
+  roofDetails: boolean;
   /** Thickness of roads/paths/rail/green above the terrain, in mm at print scale. */
   reliefMm: number;
   /** How far rivers are carved below the banks, in mm at print scale (0 = don't carve). */
@@ -83,7 +86,7 @@ export interface ModelSettings {
 
 export const DEFAULT_SETTINGS: ModelSettings = {
   scaleDen: 1000, terrainStep: 0, terrainTolerance: 0.1, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
-  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar',
+  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true,
   reliefMm: 0.4, waterDepthMm: 1, featureStep: 0, featureSolids: true,
 };
 
@@ -176,7 +179,9 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   // ---- buildings
   if (s.buildings !== 'off' && site.buildings.length) {
     await progress('Buildings…');
-    add('buildings', buildBuildings(site, s, notes));
+    const bm = buildBuildings(site, s, notes);
+    add('buildings', bm.buildings);
+    if (bm.details.length) add('details', mergeMeshes(bm.details));
   }
 
   // ---- draped context features
@@ -282,10 +287,11 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
 }
 
 /** All buildings at the chosen LOD, one named part each. */
-function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): Mesh {
+function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): { buildings: Mesh; details: { name: string; mesh: Mesh }[] } {
   const origin = site.origin;
   const blocks: Building[] = [];
   const parts: { name: string; mesh: Mesh }[] = [];
+  const details: { name: string; mesh: Mesh }[] = [];
   const dsm = site.dsm;
   const floor = (b: Building) => b.ground - 0.5;
   let pitched = 0, raw = 0;
@@ -295,10 +301,10 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): Mesh
     b.roof = undefined;
     b.roofParts = undefined;
     if (s.buildings === 'lod2fit' && dsm) {
-      const ps = fitRoofParts(b, dsm, site.dtm, origin);
+      const ps = fitRoofParts(b, dsm, site.dtm, origin, undefined, s.roofDetails);
       if (ps) {
         b.roofParts = ps.map((p) => p.fit);
-        for (const p of ps) { parts.push({ name: p.name, mesh: p.mesh }); partTypes[p.fit.type]++; }
+        for (const p of ps) { parts.push({ name: p.name, mesh: p.mesh }); partTypes[p.fit.type]++; details.push(...p.details); }
         continue;
       }
     } else if (s.buildings === 'lod15' && dsm) {
@@ -317,10 +323,10 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): Mesh
   if (s.buildings === 'lod15') notes.push(dsm ? `LOD1.5: ${pitched} pitched roofs fitted, ${blocks.length} flat.` : 'LOD1.5 needs the LIDAR DSM; showing flat blocks.');
   if (s.buildings === 'lod2fit') {
     const n = partTypes.flat + partTypes.shed + partTypes.gable + partTypes.hip;
-    notes.push(dsm ? `LOD2-fit: ${n} roof parts (${partTypes.gable} gable, ${partTypes.hip} hip, ${partTypes.shed} shed, ${partTypes.flat} flat) on ${site.buildings.length - blocks.length} buildings.` : 'LOD2-fit needs the LIDAR DSM; showing flat blocks.');
+    notes.push(dsm ? `LOD2-fit: ${n} roof parts (${partTypes.gable} gable, ${partTypes.hip} hip, ${partTypes.shed} shed, ${partTypes.flat} flat) on ${site.buildings.length - blocks.length} buildings; ${details.length} chimneys/parapets.` : 'LOD2-fit needs the LIDAR DSM; showing flat blocks.');
   }
   if (s.buildings === 'lod2') notes.push(raster ? `LOD2-raw: ${raw} LIDAR roofs, ${blocks.length} blocks.` : 'LOD2 needs the LIDAR DSM; showing flat blocks.');
   const flat = buildingsMesh(blocks, origin);
-  return mergeMeshes([...parts, { name: 'blocks', mesh: flat }]);
+  return { buildings: mergeMeshes([...parts, { name: 'blocks', mesh: flat }]), details };
 }
 

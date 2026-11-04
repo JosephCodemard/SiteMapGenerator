@@ -261,6 +261,7 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 |---|---|
 | Dataset audit | done (section 2) |
 | M1 adaptive terrain (RTIN) | **done**: 318 k → 54 k triangles at ±10 cm on Pulteney; tests pass |
+| M1 chimneys and parapets | **done**: separate `ROOF-DETAIL` layer; Pulteney 701 chimneys, 21 parapets |
 | M1 LOD2-fit roofs (terrace split, L-shape decomposition, flat/shed/gable/hip) | **done**: on Pulteney, 289 buildings → 557 parts, 67 non-flat (LOD1.5 found 3); terraces step per house; verified in the browser |
 | Custom site shapes (4.10) | planned in M2 |
 | Side-elevation slice (4.6) | planned in M4 |

@@ -204,6 +204,7 @@ function readSettings(): ModelSettings {
     bridges: checked('fBridges'),
     walls: checked('fWalls'),
     trees: checked('fTrees') ? (sel('treeMode') as ModelSettings['trees']) : 'off',
+    roofDetails: true,
     reliefMm: num('reliefMm') || DEFAULT_SETTINGS.reliefMm,
     waterDepthMm: num('waterMm'),
     featureStep: num('featureStep'),

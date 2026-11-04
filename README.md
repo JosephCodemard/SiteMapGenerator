@@ -37,6 +37,7 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
    - **LOD1** is a closed block sunk 0.5 m into the terrain.
    - **LOD1.5** fits a flat, gable or hip roof to the footprint's oriented box by least squares against the DSM, and keeps it only if the RMS error is ≤ 1.2 m and the pitch is plausible. Stepped terraces on a hillside, and complex roofs, stay as blocks.
    - **LOD2-fit** splits the footprint into parts (one per house in a terrace, found from roofline steps along the long axis; L/T/U shapes bisected into rectangles) and fits flat, shed, gable or hip roofs to each by least squares against the DSM, ignoring edge samples. Each part is its own closed solid (`building_<id>_<n>`), so walls and floor join the roof and ground by construction.
+   - With LOD2-fit, **chimneys** (small DSM clusters 0.9–4.5 m above the fitted roof, rejected if they cover > 25 % of a roof) and **parapets** (a rim 0.35–1.8 m above a flat roof's interior) become separate objects on the `ROOF-DETAIL` layer.
    - **LOD2-raw** cuts the DSM grid to the footprint exactly (the roof edge follows the outline) with walls from the DSM. It looks like the real roofs but is noisy and not guaranteed watertight, so use it for visualisation.
 6. **Context features** (`src/process/context.ts`, `buffer.ts`, `scene.ts`):
    - Roads, paths and rail are offset from their centrelines (Clipper): `width` tag, then `lanes` × 3.25 m, then a class default; merged per class so junctions become single outlines (these give the drawing kerb lines).

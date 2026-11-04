@@ -56,7 +56,7 @@ export function edgeDistance(x: number, y: number, rings: Ring[]): number {
 export const PITCH_MAX_RMSE = 1.2;
 
 /** Roof height at box coordinates (u along the ridge, v across), for a shape with eaves `e`, ridge `r`. */
-function roofZ(type: 'gable' | 'hip', e: number, r: number, a: number, b: number, u: number, v: number): number {
+export function roofZ(type: 'gable' | 'hip', e: number, r: number, a: number, b: number, u: number, v: number): number {
   const s = (r - e) / b;
   const d = type === 'gable' ? b - Math.abs(v) : Math.min(b - Math.abs(v), a - Math.abs(u));
   return e + s * Math.max(0, d);

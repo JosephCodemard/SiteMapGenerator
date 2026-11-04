@@ -363,6 +363,39 @@ describe('LOD2-fit roofs', () => {
     expect(Math.abs(partsVolume(parts) - area * 9.5)).toBeLessThan(area * 9.5 * 0.04);
   });
 
+  it('extracts chimneys and a parapet as separate closed objects', () => {
+    // Flat roof at 8 m over 14 x 10; a rim 0.3-1.0 m in is +0.8 m; two chimney stacks (2x2 cells, +2.5 m) and a lift motor room too big to be one.
+    const dsm = raster(80, 60, (x, y) => {
+      if (x < 10 || x > 24 || y < 10 || y > 20) return 0;
+      const d = Math.min(x - 10, 24 - x, y - 10, 20 - y);
+      if (x >= 14 && x < 16 && y >= 14 && y < 16) return 10.5;
+      if (x >= 19 && x < 21 && y >= 12 && y < 14) return 10.5;
+      if (x >= 12 && x < 22 && y >= 16 && y < 19) return 8; // big flat area is not a chimney
+      return d <= 1.2 ? 8.8 : 8;
+    });
+    const b = building('d', [sq(1010, 2010, 1024, 2020)], 0, 8);
+    const parts = fitRoofParts(b, dsm, flatDtm, origin, undefined, true)!;
+    expect(parts).toHaveLength(1);
+    const names = parts[0].details.map((d) => d.name);
+    expect(names.filter((n) => n.startsWith('chimney_'))).toHaveLength(2);
+    expect(names.some((n) => n.startsWith('parapet_'))).toBe(true);
+    for (const d of parts[0].details) {
+      expect(isWatertight(d.mesh), d.name).toBe(true);
+      expect(volume(d.mesh), d.name).toBeGreaterThan(0);
+    }
+    const ch = parts[0].details.find((d) => d.name.startsWith('chimney_'))!.mesh;
+    expect(Math.max(...Array.from(ch.positions).filter((_, i) => i % 3 === 2))).toBeCloseTo(10.5, 1);
+    // No details unless asked for.
+    expect(fitRoofParts(b, dsm, flatDtm, origin)![0].details).toEqual([]);
+  });
+
+  it('does not read a badly fitted roof as a field of chimneys', () => {
+    // Roof surface with a 3 m cliff down the middle: far more than 25% of the cells sit well above any flat fit.
+    const dsm = raster(80, 60, (x, y) => (x >= 10 && x <= 30 && y >= 10 && y <= 20 ? (x < 20 ? 6 : 10) : 0));
+    const parts = fitRoofParts(building('c', [sq(1010, 2010, 1030, 2020)], 0, 8), dsm, flatDtm, origin, undefined, true)!;
+    expect(parts.flatMap((p) => p.details.filter((d) => d.name.startsWith('chimney_')))).toHaveLength(0);
+  });
+
   it('keeps a plain flat roof as a single flat part', () => {
     const dsm = roofDsm(20, 10, () => 8);
     const parts = fitRoofParts(building('f', [sq(1010, 2010, 1030, 2020)], 0, 8), dsm, flatDtm, origin)!;
