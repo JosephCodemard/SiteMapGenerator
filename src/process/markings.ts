@@ -6,7 +6,7 @@ import type { LineFeature, PointFeature, Ring, SiteData, XY } from '../types';
  * Road markings generated from OSM tags and road geometry (there is no open imagery to detect them from).
  * Only what the tags support is drawn, so coverage follows OSM's: treat it as indicative.
  */
-export type MarkingKind = 'centre' | 'lane' | 'edge-yellow' | 'cycle' | 'zebra' | 'signal-crossing' | 'stop' | 'giveway';
+export type MarkingKind = 'detected' | 'centre' | 'lane' | 'edge-yellow' | 'cycle' | 'zebra' | 'signal-crossing' | 'stop' | 'giveway';
 export type MarkingColour = 'white' | 'yellow' | 'red';
 
 export interface Marking {
@@ -95,8 +95,8 @@ const rect = (c: XY, dir: XY, along: number, across: number): Ring => {
 const sideTag = (t: Record<string, string>, key: string, side: 'left' | 'right') => t[`${key}:${side}`] ?? t[`${key}:both`] ?? t[key];
 
 /** All markings the tags of the site's roads and points support. */
-export function buildMarkings(site: Pick<SiteData, 'lines' | 'points'>): Marking[] {
-  const out: Marking[] = [];
+export function buildMarkings(site: Pick<SiteData, 'lines' | 'points'> & { detectedMarkings?: Marking[] }): Marking[] {
+  const out: Marking[] = [...(site.detectedMarkings ?? [])];
   const add = (kind: MarkingKind, colour: MarkingColour, rings: Ring[]) => rings.forEach((ring) => out.push({ kind, colour, ring }));
   const roads = site.lines.filter((l) => l.kind.startsWith('road') && !l.bridge && !l.tunnel && MARKED.test(l.tags.highway ?? ''));
 

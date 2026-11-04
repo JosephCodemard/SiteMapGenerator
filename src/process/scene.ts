@@ -1,13 +1,16 @@
-import { bufferLines, unionPolygons, type Polygon } from './buffer';
+import { bufferLines, differencePolygons, unionPolygons, type Polygon } from './buffer';
 import { buildContext, type Context } from './context';
 import { drapeSurface, mergeMeshes, rasterizePolygons, solidWithFlatFloor, solidWithMirrorFloor, triCount } from './geom';
 import { buildingsMesh, stepForTriangles, terrainGrid, terrainMesh, type Mesh, type TerrainGrid } from './mesh';
 import { adaptiveTerrain } from './rtin';
-import { polylineLength, resample, ribbonSolid } from './ribbon';
+import { resample, ribbonSolid } from './ribbon';
 import { buildFacades } from './facades';
+import { buildBridge } from './bridges';
 import { findEntrances } from '../analysis/entrances';
 import { buildMarkings } from './markings';
-import { fitRoofParts } from './roofparts';
+import { fitRoofParts, DEFAULT_PART_OPTIONS } from './roofparts';
+import { partyWallTester, placeDormers } from './dormers';
+import { edgeDistance } from './roofs';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh, roofRaster } from './roofs';
 import { detectTrees, treesMesh, type Tree } from './trees';
 import type { Building, Raster, SiteData } from '../types';
@@ -15,7 +18,7 @@ import type { Building, Raster, SiteData } from '../types';
 // ------------------------------------------------------------------ layers
 
 export type LayerId =
-  | 'terrain' | 'buildings' | 'details' | 'facade' | 'windows' | 'doors' | 'markings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
+  | 'terrain' | 'buildings' | 'details' | 'dormers' | 'pavements' | 'earthworks' | 'facade' | 'windows' | 'doors' | 'markings' | 'roads' | 'paths' | 'rail' | 'water' | 'green' | 'wood' | 'paved' | 'bridges' | 'walls' | 'trees';
 
 export interface LayerDef {
   id: LayerId;
@@ -31,7 +34,10 @@ export const MODEL_LAYERS: LayerDef[] = [
   { id: 'terrain', label: 'Terrain', cad: 'TERRAIN', color: '#d8d3c4' },
   { id: 'buildings', label: 'Buildings', cad: 'BUILDINGS', color: '#f4f1ea' },
   { id: 'details', label: 'Chimneys & parapets', cad: 'ROOF-DETAIL', color: '#cfc7b8' },
+  { id: 'dormers', label: 'Dormers (roof windows)', cad: 'ROOF-DORMERS', color: '#e6e0d2' },
   { id: 'roads', label: 'Roads', cad: 'ROADS', color: '#8f8b82' },
+  { id: 'pavements', label: 'Pavements (raised at the kerb)', cad: 'PAVEMENTS', color: '#cfc9bc' },
+  { id: 'earthworks', label: 'Embankments & banks', cad: 'EARTHWORKS', color: '#b3a77e' },
   { id: 'facade', label: 'Facade bands', cad: 'FACADE-BANDS', color: '#d9d2c3' },
   { id: 'windows', label: 'Windows', cad: 'FACADE-WINDOWS', color: '#7a96ad' },
   { id: 'doors', label: 'Doors', cad: 'FACADE-DOORS', color: '#6b4a2f' },
@@ -74,6 +80,10 @@ export interface ModelSettings {
   roads: boolean;
   paths: boolean;
   rail: boolean;
+  /** Pavements beside roads (tagged, mapped, or inferred along building frontage), raised at the kerb. */
+  pavements: boolean;
+  /** Steep embankments, cuttings and river banks next to roads, rail and water, as their own patches. */
+  earthworks: boolean;
   water: boolean;
   green: boolean;
   bridges: boolean;
@@ -81,6 +91,10 @@ export interface ModelSettings {
   trees: 'off' | 'osm' | 'lidar';
   /** LOD2-fit only: model chimneys and parapets as separate objects. */
   roofDetails: boolean;
+  /** LOD2-fit: dormer windows on steep and mansard roofs (procedural, on the facade bay rhythm). */
+  roofWindows: boolean;
+  /** LOD2-fit: detect mansard roofs and keep complex roofs (churches, domes) as the LIDAR surface. */
+  complexRoofs: boolean;
   /** Road markings from OSM tags (centre/lane lines, zebras, cycle lanes, stop lines, double yellows). */
   markings: boolean;
   /** Procedural facades (string courses, windows, doors): not surveyed. */
@@ -97,7 +111,7 @@ export interface ModelSettings {
 
 export const DEFAULT_SETTINGS: ModelSettings = {
   scaleDen: 1000, terrainStep: 0, terrainTolerance: 0.1, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
-  roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true, markings: true, facades: false,
+  roads: true, paths: true, rail: true, pavements: true, earthworks: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar', roofDetails: true, roofWindows: true, complexRoofs: true, markings: true, facades: false,
   reliefMm: 0.4, waterDepthMm: 1, featureStep: 0, featureSolids: true,
 };
 
@@ -206,11 +220,14 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
     const bm = buildBuildings(site, s, notes);
     add('buildings', bm.buildings);
     if (bm.details.length) add('details', mergeMeshes(bm.details));
+    if (bm.dormers.length) add('dormers', mergeMeshes(bm.dormers));
+    if (!s.facades && bm.dormerWindows.length) add('windows', mergeMeshes(bm.dormerWindows));
     if (s.facades) {
       await progress('Facades…');
       const f = buildFacades(site.buildings, findEntrances(site.buildings, site.points, site.lines), origin);
       if (f.courses) add('facade', f.courses);
-      if (f.windows) add('windows', f.windows);
+      if (f.windows) add('windows', mergeMeshes([{ name: 'facade_windows', mesh: f.windows }, ...bm.dormerWindows]));
+      else if (bm.dormerWindows.length) add('windows', mergeMeshes(bm.dormerWindows));
       if (f.doors) add('doors', f.doors);
       notes.push(`Facades (procedural, not surveyed): ${f.stats.windows} windows, ${f.stats.doors} doors, ${f.stats.courses} bands${f.stats.capped ? ' — capped to keep the model light' : ''}.`);
     }
@@ -231,8 +248,16 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   const numbered = (polys: Polygon[]) => polys.map((rings, i) => ({ name: String(i + 1), rings }));
   const local = (polys: Polygon[]): Polygon[] => polys.map((p) => p.map((r) => r.map(([e, n]) => [e - origin[0], n - origin[1]] as [number, number])));
 
+  // Ground features never overlap: carriageway > pavement > path > earthworks > parks; buildings cover them all.
+  const bboxS = site.bbox;
+  const bldPolys: Polygon[] = s.buildings !== 'off' ? site.buildings.map((b) => b.rings) : [];
+  const under = (polys: Polygon[], over: Polygon[]) => differencePolygons(polys, over, bboxS);
+  const kerb = Math.max(0.1, relief * 0.5);
   if (s.roads && ctx.roads.length) { await progress('Roads…'); add('roads', pads('road', numbered(local(ctx.roads)), 1, relief)); }
-  if (s.paths && ctx.paths.length) { await progress('Paths…'); add('paths', pads('path', numbered(local(ctx.paths)), 1, relief * 0.9)); }
+  if (s.pavements && ctx.pavements.length) { await progress('Pavements…'); add('pavements', pads('pavement', numbered(local(under(ctx.pavements, bldPolys))), 1, relief + kerb)); }
+  if (s.paths && ctx.paths.length) { await progress('Paths…'); add('paths', pads('path', numbered(local(under(ctx.paths, bldPolys))), 1, relief * 0.9)); }
+  const earthPolys = s.earthworks ? under(ctx.earthworks.areas, [...ctx.pavements, ...ctx.paths, ...bldPolys]) : [];
+  if (earthPolys.length) { await progress('Embankments…'); add('earthworks', pads('earth', numbered(local(earthPolys)), 1, relief * 0.4)); }
   if (s.rail && ctx.rail.length) { await progress('Railways…'); add('rail', pads('rail', numbered(local(ctx.rail)), 1, relief * 1.2)); }
   if (s.markings && s.roads) {
     await progress('Road markings…');
@@ -254,7 +279,8 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
       const list = ctx.areas.filter((a) => a.kind === kind);
       if (!list.length) continue;
       // OSM areas often overlap (a park containing a garden): merge them so the solids don't stack.
-      const polys = numbered(local(unionPolygons(list.map((a) => a.polygon), site.bbox)));
+      const covered = [...(s.roads ? ctx.roads : []), ...(s.pavements ? ctx.pavements : []), ...(s.paths ? ctx.paths : []), ...(s.rail ? ctx.rail : []), ...(s.water ? ctx.water : []), ...earthPolys, ...bldPolys];
+      const polys = numbered(local(under(unionPolygons(list.map((a) => a.polygon), site.bbox), covered)));
       add(kind, pads(kind, polys, 2, relief * lift));
     }
   }
@@ -272,38 +298,7 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   // ---- bridges (deck follows the DSM along the centreline) and walls
   if (s.bridges && ctx.bridges.length) {
     await progress('Bridges…');
-    const decks = ctx.bridges.map((b, i) => {
-      const pts = resample(b.coords.map(([e, n]) => [e - origin[0], n - origin[1]] as [number, number]), 2);
-      const ground = pts.map(([x, y]) => original.zAt(x, y));
-      const n = pts.length;
-      const half = b.width / 2;
-      // Lowest DSM across the deck at each station: ignores buildings standing on the bridge.
-      const raw = pts.map((p, k) => {
-        if (!site.dsm) return ground[k] + 0.5;
-        const prev = pts[Math.max(0, k - 1)], next = pts[Math.min(n - 1, k + 1)];
-        const dx = next[0] - prev[0], dy = next[1] - prev[1], l = Math.hypot(dx, dy) || 1;
-        let m = Infinity;
-        for (const off of [-half * 0.6, -half * 0.3, 0, half * 0.3, half * 0.6]) {
-          const e = p[0] + origin[0] - (dy / l) * off, nn = p[1] + origin[1] + (dx / l) * off;
-          const i = Math.floor((e - site.dsm.minE) / site.dsm.res), j = Math.floor((site.dsm.maxN - nn) / site.dsm.res);
-          if (i >= 0 && j >= 0 && i < site.dsm.width && j < site.dsm.height) m = Math.min(m, site.dsm.data[j * site.dsm.width + i]);
-        }
-        return Number.isFinite(m) ? m : ground[k];
-      });
-      // Smooth, then keep the deck between the ground and a gentle arch over the abutments.
-      const smooth = raw.map((_, k) => {
-        let sum = 0, c = 0;
-        for (let o = -3; o <= 3; o++) { const q = k + o; if (q >= 0 && q < n) { sum += raw[q]; c++; } }
-        return sum / c;
-      });
-      const span = polylineLength(b.coords);
-      const rise = Math.min(8, 1 + span * 0.08);
-      const top = smooth.map((z, k) => {
-        const lin = ground[0] + (ground[n - 1] - ground[0]) * (n > 1 ? k / (n - 1) : 0);
-        return Math.min(Math.max(z, ground[k] + 0.3), Math.max(lin, ground[k]) + rise);
-      });
-      return { name: `bridge_${safe(b.id) || i + 1}`, mesh: ribbonSolid(pts, top, half, 1.0) };
-    });
+    const decks = ctx.bridges.flatMap((b, i) => buildBridge(b, safe(b.id) || String(i + 1), origin, original.zAt, site.dsm, { parapet: Math.max(0.5, relief * 2), roadLift: relief }));
     add('bridges', mergeMeshes(decks));
   }
   if (s.walls && ctx.walls.length) {
@@ -333,23 +328,35 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
 }
 
 /** All buildings at the chosen LOD, one named part each. */
-function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): { buildings: Mesh; details: { name: string; mesh: Mesh }[] } {
+function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): { buildings: Mesh; details: { name: string; mesh: Mesh }[]; dormers: { name: string; mesh: Mesh }[]; dormerWindows: { name: string; mesh: Mesh }[] } {
   const origin = site.origin;
   const blocks: Building[] = [];
   const parts: { name: string; mesh: Mesh }[] = [];
   const details: { name: string; mesh: Mesh }[] = [];
+  const dormers: { name: string; mesh: Mesh }[] = [], dormerWindows: { name: string; mesh: Mesh }[] = [];
+  const party = partyWallTester(site.buildings);
   const dsm = site.dsm;
   const floor = (b: Building) => b.ground - 0.5;
   let pitched = 0, raw = 0;
-  const partTypes = { flat: 0, shed: 0, gable: 0, hip: 0 };
+  const partTypes = { flat: 0, shed: 0, gable: 0, hip: 0, mansard: 0, surface: 0 };
   const raster = dsm && s.buildings === 'lod2' ? roofRaster(dsm, s.roofStep) : null;
   for (const b of site.buildings) {
     b.roof = undefined;
     b.roofParts = undefined;
     if (s.buildings === 'lod2fit' && dsm) {
-      const ps = fitRoofParts(b, dsm, site.dtm, origin, undefined, s.roofDetails);
+      const ps = fitRoofParts(b, dsm, site.dtm, origin, { ...DEFAULT_PART_OPTIONS, mansards: s.complexRoofs, surfaceFallback: s.complexRoofs, vegetation: site.vegetation }, s.roofDetails);
       if (ps) {
         b.roofParts = ps.map((p) => p.fit);
+        b.dormers = undefined;
+        if (s.roofWindows) {
+          for (const p of ps) {
+            const others = ps.filter((q) => q !== p).flatMap((q) => q.region);
+            const r = placeDormers(p.region, p.fit, p.ground, origin, (m) => party(b, m) || (others.length > 0 && edgeDistance(m[0], m[1], others) < 0.4));
+            if (r.solids) dormers.push({ name: `dormers_${p.name.replace(/^building_/, '')}`, mesh: r.solids });
+            if (r.windows) dormerWindows.push({ name: `dormer_windows_${p.name.replace(/^building_/, '')}`, mesh: r.windows });
+            if (r.list.length) (b.dormers ??= []).push(...r.list);
+          }
+        }
         for (const p of ps) { parts.push({ name: p.name, mesh: p.mesh }); partTypes[p.fit.type]++; details.push(...p.details); }
         continue;
       }
@@ -368,11 +375,11 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): { bu
   }
   if (s.buildings === 'lod15') notes.push(dsm ? `LOD1.5: ${pitched} pitched roofs fitted, ${blocks.length} flat.` : 'LOD1.5 needs the LIDAR DSM; showing flat blocks.');
   if (s.buildings === 'lod2fit') {
-    const n = partTypes.flat + partTypes.shed + partTypes.gable + partTypes.hip;
-    notes.push(dsm ? `LOD2-fit: ${n} roof parts (${partTypes.gable} gable, ${partTypes.hip} hip, ${partTypes.shed} shed, ${partTypes.flat} flat) on ${site.buildings.length - blocks.length} buildings; ${details.length} chimneys/parapets.` : 'LOD2-fit needs the LIDAR DSM; showing flat blocks.');
+    const n = Object.values(partTypes).reduce((a, c) => a + c, 0);
+    notes.push(dsm ? `LOD2-fit: ${n} roof parts (${partTypes.gable} gable, ${partTypes.hip} hip, ${partTypes.mansard} mansard, ${partTypes.shed} shed, ${partTypes.surface} complex-surface, ${partTypes.flat} flat) on ${site.buildings.length - blocks.length} buildings; ${details.length} chimneys/parapets; ${dormers.length} roofs with dormer windows.` : 'LOD2-fit needs the LIDAR DSM; showing flat blocks.');
   }
   if (s.buildings === 'lod2') notes.push(raster ? `LOD2-raw: ${raw} LIDAR roofs, ${blocks.length} blocks.` : 'LOD2 needs the LIDAR DSM; showing flat blocks.');
   const flat = buildingsMesh(blocks, origin);
-  return { buildings: mergeMeshes([...parts, { name: 'blocks', mesh: flat }]), details };
+  return { buildings: mergeMeshes([...parts, { name: 'blocks', mesh: flat }]), details, dormers, dormerWindows };
 }
 

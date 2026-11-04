@@ -28,6 +28,8 @@ export class AreaMap {
   onRedLine: (ring: Ring) => void = () => {};
   /** A finished section cut line A -> B (BNG). */
   onCut: (a: XY, b: XY) => void = () => {};
+  /** A cut line was clicked on the map (id as given to setCuts). */
+  onCutSelect: (id: number) => void = () => {};
   private target: 'site' | 'redline' = 'site';
   private cutStart: XY | null = null;
 
@@ -52,6 +54,7 @@ export class AreaMap {
           aoi: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
           redline: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
           cuts: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+          cutpreview: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
         },
         layers: [
           { id: 'osm', type: 'raster', source: 'osm' },
@@ -59,8 +62,9 @@ export class AreaMap {
           { id: 'aoi-fill', type: 'fill', source: 'aoi', paint: { 'fill-color': '#e0006b', 'fill-opacity': 0.12 } },
           { id: 'aoi-line', type: 'line', source: 'aoi', paint: { 'line-color': '#e0006b', 'line-width': 2 } },
           { id: 'redline-line', type: 'line', source: 'redline', paint: { 'line-color': '#e00000', 'line-width': 3 } },
-          { id: 'cuts-line', type: 'line', source: 'cuts', paint: { 'line-color': '#0b3d91', 'line-width': 2.5, 'line-dasharray': [3, 2] } },
-          { id: 'cuts-pts', type: 'circle', source: 'cuts', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 5, 'circle-color': '#0b3d91' } },
+          { id: 'cutpreview-line', type: 'line', source: 'cutpreview', paint: { 'line-color': '#0b3d91', 'line-width': 2, 'line-dasharray': [2, 2] } },
+          { id: 'cuts-line', type: 'line', source: 'cuts', filter: ['==', '$type', 'LineString'], paint: { 'line-color': ['case', ['==', ['get', 'active'], 1], '#e07b00', '#0b3d91'], 'line-width': ['case', ['==', ['get', 'active'], 1], 4, 2.5], 'line-dasharray': [3, 2] } },
+          { id: 'cuts-pts', type: 'circle', source: 'cuts', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 6, 'circle-color': ['case', ['==', ['get', 'active'], 1], '#e07b00', '#0b3d91'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } },
         ],
       },
     });
@@ -68,19 +72,21 @@ export class AreaMap {
     this.map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
 
     const bng = (e: { lngLat: { lng: number; lat: number } }): XY => toBNG(e.lngLat.lng, e.lngLat.lat);
+    const isCut = () => (this.tool as string) === 'cut';
     this.map.on('mousedown', (e) => {
-      if (!this.tool || this.tool === 'polygon') return;
+      if (!this.tool || this.tool === 'polygon' || isCut()) return;
       e.preventDefault();
       this.start = bng(e);
     });
     this.map.on('mousemove', (e) => {
       if (!this.tool) return;
       const p = bng(e);
+      if (isCut()) { if (this.cutStart) this.showCutPreview(this.cutStart, p); return; }
       if (this.tool === 'polygon') { this.hover = p; if (this.verts.length) this.showPolygon(); return; }
       if (this.start) this.preview(this.start, p);
     });
     this.map.on('mouseup', (e) => {
-      if (!this.tool || this.tool === 'polygon' || !this.start) return;
+      if (!this.tool || this.tool === 'polygon' || isCut() || !this.start) return;
       const [a, p] = [this.start, bng(e)];
       this.start = null;
       if (this.tool === 'rect') {
@@ -92,12 +98,21 @@ export class AreaMap {
       this.finish(this.shapeFrom(a, p));
     });
     this.map.on('click', (e) => {
-      if ((this.tool as string) === 'cut') {
+      if (isCut()) {
         const p = bng(e);
-        if (!this.cutStart) { this.cutStart = p; this.onMessage('Click the end of the cut line.'); return; }
+        if (!this.cutStart) { this.cutStart = p; this.onMessage('Now click the end of the cut line (B). Esc cancels.'); return; }
         const a = this.cutStart;
+        if (Math.hypot(p[0] - a[0], p[1] - a[1]) < 3) { this.onMessage('The cut line is too short — click further away.'); return; }
         this.setTool(null);
-        if (Math.hypot(p[0] - a[0], p[1] - a[1]) >= 3) this.onCut(a, p);
+        this.showCutPreview(null);
+        this.onCut(a, p);
+        return;
+      }
+      if (!this.tool) {
+        // Pick an existing cut line (or its A/B end marker) by clicking it.
+        const hit = this.map.queryRenderedFeatures([[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]], { layers: ['cuts-line', 'cuts-pts'] })[0];
+        const id = hit?.properties?.id;
+        if (typeof id === 'number') this.onCutSelect(id);
         return;
       }
       if (this.tool !== 'polygon') return;
@@ -111,6 +126,7 @@ export class AreaMap {
       this.finishPolygon();
     });
     window.addEventListener('keydown', (e) => {
+      if (isCut() && e.key === 'Escape') { this.setTool(null); this.showCutPreview(null); this.onMessage('Cut line cancelled.'); return; }
       if (this.tool !== 'polygon') return;
       if (e.key === 'Enter') this.finishPolygon();
       else if (e.key === 'Backspace') { this.verts.pop(); this.showPolygon(); }
@@ -167,6 +183,7 @@ export class AreaMap {
     this.tool = kind as ShapeKind | null;
     this.target = target;
     this.cutStart = null;
+    if (kind !== 'cut') this.showCutPreview(null);
     this.start = null;
     this.verts = [];
     this.hover = null;
@@ -195,14 +212,25 @@ export class AreaMap {
   }
 
   /** Show the section cut lines (A, B markers). */
-  setCuts(cuts: { a: XY; b: XY }[]) {
+  setCuts(cuts: { id?: number; label?: string; a: XY; b: XY }[], active?: number) {
     (this.map.getSource('cuts') as GeoJSONSource | undefined)?.setData({
       type: 'FeatureCollection',
-      features: cuts.flatMap((c) => [
-        { type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: [toWGS(...c.a), toWGS(...c.b)] } },
-        { type: 'Feature' as const, properties: {}, geometry: { type: 'Point' as const, coordinates: toWGS(...c.a) } },
-        { type: 'Feature' as const, properties: {}, geometry: { type: 'Point' as const, coordinates: toWGS(...c.b) } },
-      ]),
+      features: cuts.flatMap((c) => {
+        const properties = { id: c.id ?? -1, active: c.id === active ? 1 : 0 };
+        return [
+          { type: 'Feature' as const, properties, geometry: { type: 'LineString' as const, coordinates: [toWGS(...c.a), toWGS(...c.b)] } },
+          { type: 'Feature' as const, properties: { ...properties, text: `${c.label ?? ''}` }, geometry: { type: 'Point' as const, coordinates: toWGS(...c.a) } },
+          { type: 'Feature' as const, properties: { ...properties, text: `${c.label ?? ''}'` }, geometry: { type: 'Point' as const, coordinates: toWGS(...c.b) } },
+        ];
+      }),
+    });
+  }
+
+  /** Rubber-band line while the second cut point is being chosen. */
+  private showCutPreview(a: XY | null, b?: XY) {
+    (this.map.getSource('cutpreview') as GeoJSONSource | undefined)?.setData({
+      type: 'FeatureCollection',
+      features: a && b ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [toWGS(...a), toWGS(...b)] } }] : [],
     });
   }
 

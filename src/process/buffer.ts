@@ -116,3 +116,52 @@ export function unionPolygons(polys: Polygon[], bbox: BBox): Polygon[] {
   }
   return paths.length ? runUnion(paths, bbox, ox, oy) : [];
 }
+
+function polyPaths(polys: Polygon[], ox: number, oy: number): CL.Paths {
+  const paths: CL.Paths = [];
+  for (const poly of polys) {
+    poly.forEach((ring, k) => {
+      if (ring.length < 3) return;
+      const p = toPath(ring, ox, oy);
+      if ((signedArea(ring) > 0) !== (k === 0)) p.reverse();
+      paths.push(p);
+    });
+  }
+  return paths;
+}
+
+/** Subject minus clip (both sets of polygons with holes), trimmed to the box: the overlap-free partition of features. */
+export function differencePolygons(subject: Polygon[], clip: Polygon[], bbox: BBox): Polygon[] {
+  if (!subject.length) return [];
+  if (!clip.length) return subject;
+  const ox = bbox.minE, oy = bbox.minN;
+  const c = new ClipperLib.Clipper();
+  c.AddPaths(polyPaths(subject, ox, oy), ClipperLib.PolyType.ptSubject, true);
+  c.AddPaths(polyPaths(clip, ox, oy), ClipperLib.PolyType.ptClip, true);
+  const tree = new ClipperLib.PolyTree();
+  c.Execute(ClipperLib.ClipType.ctDifference, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  // Slivers thinner than ~5 cm come from rounding along shared edges: drop them.
+  return exPolygons(tree, ox, oy).filter((p) => Math.abs(signedArea(p[0])) > 0.05);
+}
+
+/** Intersection of two sets of polygons. */
+export function intersectPolygons(a: Polygon[], b: Polygon[], bbox: BBox): Polygon[] {
+  if (!a.length || !b.length) return [];
+  const ox = bbox.minE, oy = bbox.minN;
+  const c = new ClipperLib.Clipper();
+  c.AddPaths(polyPaths(a, ox, oy), ClipperLib.PolyType.ptSubject, true);
+  c.AddPaths(polyPaths(b, ox, oy), ClipperLib.PolyType.ptClip, true);
+  const tree = new ClipperLib.PolyTree();
+  c.Execute(ClipperLib.ClipType.ctIntersection, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  return exPolygons(tree, ox, oy);
+}
+
+/** Offset closed polygons by `d` metres (negative shrinks). */
+export function offsetPolygons(polys: Polygon[], d: number, bbox: BBox): Polygon[] {
+  const ox = bbox.minE, oy = bbox.minN;
+  const co = new ClipperLib.ClipperOffset(2, 0.02 * S);
+  co.AddPaths(polyPaths(polys, ox, oy), ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+  const tree = new ClipperLib.PolyTree();
+  co.Execute(tree, d * S);
+  return exPolygons(tree, ox, oy);
+}

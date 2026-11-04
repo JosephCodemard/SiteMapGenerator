@@ -1,4 +1,5 @@
 import { layerSvg, type Layer } from './drawing';
+import { applyStyle, STYLES, type DrawingStyle } from './styles';
 import type { BBox, Ring } from '../types';
 
 /**
@@ -19,7 +20,16 @@ export interface TitleBlock {
   date: string;
   revision: string;
   status: string;
+  client?: string;
+  checkedBy?: string;
+  approvedBy?: string;
 }
+
+/** ISO 19650 / BS 1192 suitability codes for the status field. */
+export const STATUS_CODES = ['S0 Work in progress', 'S1 Suitable for coordination', 'S2 Suitable for information', 'S3 Suitable for review and comment', 'S4 Suitable for stage approval', 'A1 Authorised and accepted', 'For planning', 'For construction'];
+
+/** The standard drawing scales (BS 1192 / RIBA): what the scale picker offers. */
+export const STANDARD_SCALES = [20, 50, 100, 200, 250, 500, 1000, 1250, 2000, 2500, 5000, 10000];
 
 export const DEFAULT_BLOCK: TitleBlock = {
   project: 'Site model', title: 'Site plan', number: 'SP-001', drawnBy: '', date: new Date().toISOString().slice(0, 10), revision: 'P01', status: 'For information',
@@ -93,12 +103,17 @@ export interface SheetOptions {
   shape?: Ring;
   /** Extra images (e.g. analysis results) drawn over the map extent, below the layers. */
   images?: { href: string; opacity: number }[];
+  /** Drawing style (paper, ink, hatches, filters); default = standard colour. */
+  style?: DrawingStyle;
 }
 
 const nice = (target: number) => [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000].reduce((a, c) => (c <= target ? c : a), 1);
 
 /** Complete sheet as an SVG string in paper millimetres, plus its layout. */
 export function writeSheet(layers: Layer[], bbox: BBox, spec: SheetSpec, opt: SheetOptions = {}): { svg: string; layout: SheetLayout } {
+  const style = opt.style ?? STYLES.standard;
+  const INK = style.ink, INK2 = style.ink2, PAPER_C = style.paper;
+  layers = applyStyle(layers, style);
   const ew = bbox.maxE - bbox.minE, eh = bbox.maxN - bbox.minN;
   const lay = layoutSheet(ew, eh, spec);
   const k = 1000 / spec.scale;
@@ -108,31 +123,47 @@ export function writeSheet(layers: Layer[], bbox: BBox, spec: SheetSpec, opt: Sh
   const path = (pts: Ring, close: boolean) => pts.map((q, i) => `${i ? 'L' : 'M'}${X(q[0])} ${Y(q[1])}`).join('') + (close ? 'Z' : '');
   // Cap the clip box to the paper so an oversize drawing is cropped rather than spilling.
   const out: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${lay.w}mm" height="${lay.h}mm" viewBox="0 0 ${lay.w} ${lay.h}" font-family="Helvetica, Arial, sans-serif">`,
-    `<rect width="100%" height="100%" fill="#ffffff"/>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${lay.w}mm" height="${lay.h}mm" viewBox="0 0 ${lay.w} ${lay.h}" font-family='${style.font.replace(/'/g, '')}' color="${INK}">`,
+    `<defs>${style.defs}</defs>`,
+    `<rect width="100%" height="100%" fill="${PAPER_C}"/>`,
+    ...(style.grain ? [`<rect width="100%" height="100%" filter="url(#grain)" opacity="0.5"/>`] : []),
     `<clipPath id="site">${opt.shape ? `<path d="${path(opt.shape, true)}"/>` : `<rect x="${m.x}" y="${m.y}" width="${m.w.toFixed(2)}" height="${m.h.toFixed(2)}"/>`}</clipPath>`,
   ];
-  if (opt.underlay) out.push(`<g inkscape:groupmode="layer" inkscape:label="HILLSHADE" opacity="0.45"><image href="${opt.underlay}" x="${m.x}" y="${m.y}" width="${m.w.toFixed(2)}" height="${m.h.toFixed(2)}" preserveAspectRatio="none"/></g>`);
+  if (opt.underlay && style.hillshade > 0) out.push(`<g inkscape:groupmode="layer" inkscape:label="HILLSHADE" opacity="${Math.min(0.9, 0.45 * style.hillshade)}" ${style.id === 'sketch' ? 'style="mix-blend-mode:multiply"' : ''}><image href="${opt.underlay}" x="${m.x}" y="${m.y}" width="${m.w.toFixed(2)}" height="${m.h.toFixed(2)}" preserveAspectRatio="none"/></g>`);
   for (const im of opt.images ?? []) out.push(`<image href="${im.href}" x="${m.x}" y="${m.y}" width="${m.w.toFixed(2)}" height="${m.h.toFixed(2)}" opacity="${im.opacity}" preserveAspectRatio="none"/>`);
   out.push(...layerSvg(layers, X, Y, k, path));
 
   // Frames.
-  const rect = (x: number, y: number, w: number, h: number, sw = 0.35, fill = 'none') => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="#000" stroke-width="${sw}"/>`;
+  const rect = (x: number, y: number, w: number, h: number, sw = 0.35, fill = 'none') => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${INK}" stroke-width="${sw}"/>`;
   const text = (x: number, y: number, size: number, t: string, extra = '') => `<text x="${x}" y="${y}" font-size="${size}" ${extra}>${esc(t)}</text>`;
   const f: string[] = [];
   f.push(rect(MARGIN, MARGIN, lay.w - 2 * MARGIN, lay.h - 2 * MARGIN, 0.7), rect(m.x, m.y, Math.min(m.w, lay.map.w), m.h, 0.35));
-  f.push(`<line x1="${p.x}" y1="${p.y}" x2="${p.x}" y2="${p.y + p.h}" stroke="#000" stroke-width="0.5"/>`);
+  f.push(`<line x1="${p.x}" y1="${p.y}" x2="${p.x}" y2="${p.y + p.h}" stroke="${INK}" stroke-width="0.5"/>`);
+
+  // Zone references round the border (BS 1192 / ISO 5457): letters down the sides, numbers along the top and bottom.
+  {
+    const cols = Math.max(2, Math.round((lay.w - 2 * MARGIN) / 60)), rows = Math.max(2, Math.round((lay.h - 2 * MARGIN) / 60));
+    for (let i = 0; i < cols; i++) {
+      const x = MARGIN + ((i + 0.5) * (lay.w - 2 * MARGIN)) / cols;
+      f.push(text(x, MARGIN - 2.2, 2.4, String(i + 1), 'text-anchor="middle"'), text(x, lay.h - MARGIN + 4.6, 2.4, String(i + 1), 'text-anchor="middle"'));
+      if (i) f.push(`<line x1="${MARGIN + (i * (lay.w - 2 * MARGIN)) / cols}" y1="${MARGIN - 1.5}" x2="${MARGIN + (i * (lay.w - 2 * MARGIN)) / cols}" y2="${MARGIN}" stroke="${INK}" stroke-width="0.25"/>`);
+    }
+    for (let j = 0; j < rows; j++) {
+      const y = MARGIN + ((j + 0.5) * (lay.h - 2 * MARGIN)) / rows;
+      f.push(text(MARGIN - 4, y + 0.8, 2.4, String.fromCharCode(65 + j), 'text-anchor="middle"'), text(lay.w - MARGIN + 4, y + 0.8, 2.4, String.fromCharCode(65 + j), 'text-anchor="middle"'));
+    }
+  }
 
   // BNG grid ticks on the map frame.
   if (spec.grid) {
     const step = nice((ew / 6));
     const fe = Math.ceil(bbox.minE / step) * step, fn = Math.ceil(bbox.minN / step) * step;
     for (let e = fe; e <= bbox.maxE; e += step) {
-      f.push(`<line x1="${X(e)}" y1="${m.y}" x2="${X(e)}" y2="${m.y + 2.5}" stroke="#000" stroke-width="0.25"/><line x1="${X(e)}" y1="${m.y + m.h - 2.5}" x2="${X(e)}" y2="${m.y + m.h}" stroke="#000" stroke-width="0.25"/>`);
+      f.push(`<line x1="${X(e)}" y1="${m.y}" x2="${X(e)}" y2="${m.y + 2.5}" stroke="${INK}" stroke-width="0.25"/><line x1="${X(e)}" y1="${m.y + m.h - 2.5}" x2="${X(e)}" y2="${m.y + m.h}" stroke="${INK}" stroke-width="0.25"/>`);
       f.push(text(Number(X(e)), m.y + m.h + 3.6, 2, `${e}`, 'text-anchor="middle"'));
     }
     for (let n = fn; n <= bbox.maxN; n += step) {
-      f.push(`<line x1="${m.x}" y1="${Y(n)}" x2="${m.x + 2.5}" y2="${Y(n)}" stroke="#000" stroke-width="0.25"/><line x1="${m.x + m.w - 2.5}" y1="${Y(n)}" x2="${m.x + m.w}" y2="${Y(n)}" stroke="#000" stroke-width="0.25"/>`);
+      f.push(`<line x1="${m.x}" y1="${Y(n)}" x2="${m.x + 2.5}" y2="${Y(n)}" stroke="${INK}" stroke-width="0.25"/><line x1="${m.x + m.w - 2.5}" y1="${Y(n)}" x2="${m.x + m.w}" y2="${Y(n)}" stroke="${INK}" stroke-width="0.25"/>`);
       f.push(`<text x="${m.x - 1.2}" y="${Y(n)}" font-size="2" text-anchor="middle" transform="rotate(-90 ${m.x - 1.2} ${Y(n)})">${n}</text>`);
     }
   }
@@ -140,12 +171,12 @@ export function writeSheet(layers: Layer[], bbox: BBox, spec: SheetSpec, opt: Sh
   // Right-hand panel, top to bottom.
   let y = p.y + 6;
   const cx = p.x + p.w / 2;
-  f.push(`<g transform="translate(${cx} ${y + 2})"><path d="M0 -2 L5 12 L0 9 L-5 12 Z" fill="#000"/>${text(0, 18, 4, 'N', 'text-anchor="middle" font-weight="bold"')}</g>`);
+  f.push(`<g transform="translate(${cx} ${y + 2})"><path d="M0 -2 L5 12 L0 9 L-5 12 Z" fill="${INK}"/>${text(0, 18, 4, 'N', 'text-anchor="middle" font-weight="bold"')}</g>`);
   y += 26;
   // Scale bar.
   const bar = nice((p.w - 16) / k * 0.9 / 1), segs = 4;
   const bw = bar * k, x0 = p.x + 6;
-  for (let i = 0; i < segs; i++) f.push(`<rect x="${(x0 + (i * bw) / segs).toFixed(2)}" y="${y}" width="${(bw / segs).toFixed(2)}" height="2" fill="${i % 2 ? '#fff' : '#000'}" stroke="#000" stroke-width="0.2"/>`);
+  for (let i = 0; i < segs; i++) f.push(`<rect x="${(x0 + (i * bw) / segs).toFixed(2)}" y="${y}" width="${(bw / segs).toFixed(2)}" height="2" fill="${i % 2 ? PAPER_C : INK}" stroke="${INK}" stroke-width="0.2"/>`);
   f.push(text(x0, y + 6, 2.2, '0'), text(x0 + bw, y + 6, 2.2, `${bar} m`, 'text-anchor="middle"'));
   y += 12;
   // Legend from the layers actually drawn.
@@ -166,18 +197,20 @@ export function writeSheet(layers: Layer[], bbox: BBox, spec: SheetSpec, opt: Sh
   // Bottom: revision table then title block, anchored to the panel bottom.
   const tbRows: [string, string][] = [
     ['Project', spec.block.project], ['Drawing', spec.block.title], ['Drawing no.', spec.block.number],
-    ['Scale', `1:${spec.scale} @ ${lay.paper}`], ['Date', spec.block.date], ['Drawn by', spec.block.drawnBy], ['Status', spec.block.status],
+    ['Scale', `1:${spec.scale} @ ${lay.paper}`], ['Date', spec.block.date], ['Drawn by / checked / approved', [spec.block.drawnBy, spec.block.checkedBy, spec.block.approvedBy].map((v) => v || '–').join(' / ')],
+    ['Status (ISO 19650)', spec.block.status], ...(spec.block.client ? [['Client', spec.block.client] as [string, string]] : []),
   ];
-  const rowH = 7, tbH = tbRows.length * rowH, revH = 4 * 5;
+  const rowH = 6.4, tbH = tbRows.length * rowH, revH = 4 * 5;
   const tbY = p.y + p.h - tbH, revY = tbY - revH - 4;
-  f.push(rect(p.x, revY, p.w, revH), `<line x1="${p.x}" y1="${revY + 5}" x2="${p.x + p.w}" y2="${revY + 5}" stroke="#000" stroke-width="0.25"/>`);
+  f.push(rect(p.x, revY, p.w, revH), `<line x1="${p.x}" y1="${revY + 5}" x2="${p.x + p.w}" y2="${revY + 5}" stroke="${INK}" stroke-width="0.25"/>`);
   f.push(text(p.x + 2, revY + 3.6, 2.2, 'Rev', 'font-weight="bold"'), text(p.x + 12, revY + 3.6, 2.2, 'Date', 'font-weight="bold"'), text(p.x + 32, revY + 3.6, 2.2, 'Description', 'font-weight="bold"'));
   f.push(text(p.x + 2, revY + 8.6, 2.2, spec.block.revision), text(p.x + 12, revY + 8.6, 2.2, spec.block.date), text(p.x + 32, revY + 8.6, 2.2, 'First issue'));
   tbRows.forEach(([label, value], i) => {
     const ry = tbY + i * rowH;
-    f.push(rect(p.x, ry, p.w, rowH, 0.25), text(p.x + 2, ry + 2.6, 1.8, label, 'fill="#555"'), text(p.x + 2, ry + 6, i === 1 ? 3.6 : 3, value, 'font-weight="bold"'));
+    f.push(rect(p.x, ry, p.w, rowH, 0.25), text(p.x + 2, ry + 2.6, 1.8, label, `fill="${INK2}"`), text(p.x + 2, ry + 6, i === 1 ? 3.6 : 3, value, 'font-weight="bold"'));
   });
-  f.push(text(p.x + 2, tbY - revH - 6, 1.7, 'Contains EA LIDAR data (OGL v3) and OpenStreetMap data (ODbL).', 'fill="#555"'));
-  out.push(`<g id="SHEET" inkscape:groupmode="layer" inkscape:label="SHEET">${f.join('')}</g>`, '</svg>');
+  f.push(text(p.x + 2, tbY - revH - 9.5, 1.7, 'Do not scale from this drawing. Check dimensions on site.', `fill="${INK2}"`));
+  f.push(text(p.x + 2, tbY - revH - 6, 1.7, 'Contains EA LIDAR data (OGL v3) and OpenStreetMap data (ODbL).', `fill="${INK2}"`));
+  out.push(`<g id="SHEET" inkscape:groupmode="layer" inkscape:label="SHEET" fill="${INK}">${f.join('')}</g>`, '</svg>');
   return { svg: out.join('\n'), layout: lay };
 }

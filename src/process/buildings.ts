@@ -1,7 +1,7 @@
 import { pointInRings } from './clip';
 import { sample } from './raster';
 import type { OsmFootprint } from '../data/osm';
-import type { Building, HeightSource, Raster } from '../types';
+import type { Building, BuildingPart, HeightSource, Raster, Ring } from '../types';
 
 export interface HeightOptions {
   /** Percentile of DSM values inside the footprint used as the block top (0-1). */
@@ -97,4 +97,35 @@ export function buildingHeights(
 
     return { id: f.id, rings: f.rings, tags: f.tags, ground: groundMin, top: Math.max(top, groundMin + 2), source };
   });
+}
+
+/** Interior point of a ring set (centroid of the outer ring, nudged inside if it falls in a notch). */
+function interiorPoint(rings: Ring[]): [number, number] {
+  const r = rings[0];
+  let x = 0, y = 0;
+  for (const p of r) { x += p[0]; y += p[1]; }
+  const c: [number, number] = [x / r.length, y / r.length];
+  if (pointInRings(c[0], c[1], rings)) return c;
+  // Try the midpoints between the centroid and each vertex.
+  for (const p of r) {
+    const m: [number, number] = [(p[0] + c[0]) / 2, (p[1] + c[1]) / 2];
+    if (pointInRings(m[0], m[1], rings)) return m;
+  }
+  return r[0];
+}
+
+/** Give each `building:part` to the building that contains it (a part is a tower, nave or wing with its own roof). */
+export function attachParts(buildings: Building[], parts: BuildingPart[]): void {
+  for (const b of buildings) b.parts = undefined;
+  for (const p of parts) {
+    const q = interiorPoint(p.rings);
+    // The smallest containing building wins (a part in an annexe inside a bigger outline).
+    let host: Building | null = null, hostArea = Infinity;
+    for (const b of buildings) {
+      if (!pointInRings(q[0], q[1], b.rings)) continue;
+      const a = Math.abs(b.rings[0].reduce((s, pt, i, arr) => { const n = arr[(i + 1) % arr.length]; return s + pt[0] * n[1] - n[0] * pt[1]; }, 0)) / 2;
+      if (a < hostArea) { host = b; hostArea = a; }
+    }
+    if (host) (host.parts ??= []).push(p);
+  }
 }

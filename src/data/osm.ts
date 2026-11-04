@@ -3,7 +3,7 @@ import type { Feature, Geometry, Position } from 'geojson';
 import { bboxToWGS, toBNG } from '../geo/bng';
 import { clipPolygonToBox, clipPolyline } from '../process/clip';
 import { clipPolygonToShape, clipPolylineToShape, pointInShape } from '../process/shape';
-import type { AreaFeature, AreaKind, BBox, LineFeature, LineKind, PointFeature, PointKind, Ring, XY } from '../types';
+import type { AreaFeature, AreaKind, BBox, BuildingPart, LineFeature, LineKind, PointFeature, PointKind, Ring, XY } from '../types';
 
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -23,6 +23,8 @@ export interface OsmResult {
   areas: AreaFeature[];
   trees: XY[];
   points: PointFeature[];
+  /** `building:part` volumes (towers, naves, wings) that refine the building outlines. */
+  parts: BuildingPart[];
 }
 
 function query(b: { west: number; south: number; east: number; north: number }): string {
@@ -30,10 +32,14 @@ function query(b: { west: number; south: number; east: number; north: number }):
   return `[out:json][timeout:120];
 (
   wr["building"]${bb};
+  wr["building:part"]${bb};
   way["highway"]${bb};
   way["railway"~"^(rail|light_rail|tram|narrow_gauge|preserved|disused)$"]${bb};
   way["waterway"~"^(river|canal|stream|brook|drain|ditch)$"]${bb};
   way["barrier"~"^(wall|retaining_wall|city_wall|fence)$"]${bb};
+  way["waterway"~"^(weir|dam)$"]${bb};
+  way["man_made"~"^(embankment|pier|quay)$"]${bb};
+  way["natural"="cliff"]${bb};
   wr["natural"~"^(water|wood|scrub|grassland|heath|wetland)$"]${bb};
   wr["waterway"="riverbank"]${bb};
   wr["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|allotments|village_green|orchard|basin|reservoir)$"]${bb};
@@ -90,6 +96,10 @@ function lineKind(t: Record<string, string>): LineKind | null {
     return null;
   }
   if (t.railway) return 'rail';
+  if (/^(weir|dam)$/.test(t.waterway ?? '')) return 'weir';
+  if (t.man_made === 'embankment') return 'embankment';
+  if (t.man_made === 'quay' || t.man_made === 'pier') return 'quay';
+  if (t.natural === 'cliff') return 'cliff';
   if (t.waterway) return /^(river|canal)$/.test(t.waterway) ? 'river' : /^(stream|brook|drain|ditch)$/.test(t.waterway) ? 'stream' : null;
   if (/^(wall|retaining_wall|city_wall|fence)$/.test(t.barrier ?? '')) return 'wall';
   return null;
@@ -142,6 +152,7 @@ export function shiftAndClip(r: OsmResult, offset: XY, bbox: BBox): OsmResult {
     lines: r.lines.flatMap((l) => clipPolyline(mv(l.coords), bbox).map((coords) => ({ ...l, coords }))),
     trees: r.trees.map(([e, n]) => [e + dx, n + dy] as XY).filter(inBox),
     points: r.points.map((q) => ({ ...q, p: [q.p[0] + dx, q.p[1] + dy] as XY })).filter((q) => inBox(q.p)),
+    parts: r.parts.flatMap((p) => clipPolygonToBox(p.rings.map(mv), bbox).map((rings, k) => ({ ...p, id: k ? `${p.id}#${k}` : p.id, rings }))),
   };
 }
 
@@ -153,6 +164,7 @@ export function clipToShape(r: OsmResult, shape: Ring): OsmResult {
     lines: r.lines.flatMap((l) => clipPolylineToShape(l.coords, shape).map((coords) => ({ ...l, coords }))),
     trees: r.trees.filter((p) => pointInShape(p, shape)),
     points: r.points.filter((q) => pointInShape(q.p, shape)),
+    parts: r.parts.flatMap((p) => clipPolygonToShape(p.rings, shape).map((rings, k) => ({ ...p, id: k ? `${p.id}~${k}` : p.id, rings }))),
   };
 }
 
@@ -168,7 +180,7 @@ export async function fetchOsm(bbox: BBox, signal?: AbortSignal): Promise<OsmRes
 export function parseOsm(raw: unknown, bbox: BBox): OsmResult {
   const fc = osmtogeojson(raw, { flatProperties: false }); // keep tags under properties.tags
 
-  const out: OsmResult = { buildings: [], lines: [], areas: [], trees: [], points: [] };
+  const out: OsmResult = { buildings: [], lines: [], areas: [], trees: [], points: [], parts: [] };
   for (const f of fc.features as Feature<Geometry, Record<string, unknown>>[]) {
     const tags = (f.properties?.tags ?? {}) as Record<string, string>;
     const id = String(f.id ?? f.properties?.id ?? '');
@@ -183,6 +195,11 @@ export function parseOsm(raw: unknown, bbox: BBox): OsmResult {
         const kind = pointKind(tags);
         if (kind) out.points.push({ id, kind, p, tags });
       }
+      continue;
+    }
+
+    if (tags['building:part'] && tags['building:part'] !== 'no' && !tags.building) {
+      polygons(g).flatMap((poly) => clipPolygon(poly, bbox)).forEach((rings, k) => out.parts.push({ id: k ? `${id}#${k}` : id, rings, tags }));
       continue;
     }
 

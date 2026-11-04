@@ -79,6 +79,18 @@ await page.waitForFunction(() => document.getElementById('busy').hidden && docum
 await page.waitForTimeout(1000);
 await page.screenshot({ path: `${out}/3-drawing.png` });
 
+// Drawing styles and the axonometric (new in iteration 4).
+for (const style of ['planning', 'figure-ground', 'sketch', 'blueprint', 'presentation']) {
+  await page.selectOption('#drawStyle', style);
+  await page.click('#previewDrawing'); await idle(); await page.waitForTimeout(600);
+  await page.screenshot({ path: `${out}/6-style-${style}.png`, timeout: 120000 });
+}
+await page.selectOption('#drawStyle', 'sketch');
+await page.selectOption('#lod', 'lod2fit'); await page.click('#rebuild'); await idle();
+{ const [d] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#exportAxon')]); await d.saveAs(`${out}/${d.suggestedFilename()}`); console.log('download axon', d.suggestedFilename()); await idle(); await page.waitForTimeout(800); await page.screenshot({ path: `${out}/6-axon-sketch.png`, timeout: 120000 }); }
+await page.selectOption('#drawStyle', 'standard');
+await page.selectOption('#lod', 'lod15'); await page.click('#rebuild'); await idle();
+
 const exports = ['exportObj', 'exportStl', 'exportDxf3d', 'exportGlb', 'export3mf', 'export3dm', 'exportSvg', 'exportPng', 'exportDxf', 'exportPdf', 'secSvg', 'secDxf', 'exportLaser', 'exportData'];
 for (const id of exports) {
   { const st = await page.evaluate(() => ({ busyHidden: document.getElementById('busy').hidden, disabled: document.querySelectorAll('button:disabled').length, helpOpen: document.getElementById('helpDlg').open })); if (st.disabled || !st.busyHidden || st.helpOpen) console.log('STATE before', id, JSON.stringify(st), (await page.textContent('#log')).trim().split('\n').slice(-2).join(' || ')); }

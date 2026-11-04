@@ -48,6 +48,23 @@ export const levelsOf = (b: Building) => {
   return tagged > 0 ? tagged : Math.max(1, Math.round((b.top - b.ground) / 3.2));
 };
 
+/**
+ * Storeys that stand in the walls (below the eaves). A mansard or steep roof holds the top floor, lit by dormers, so
+ * it does not count: with `building:levels` the tagged `roof:levels` (else 1 for a mansard) is taken off; without it
+ * the count comes from the eaves height rather than the ridge.
+ */
+export function wallLevels(b: Building): number {
+  const parts = b.roofParts ?? [];
+  const attic = parts.some((r) => r.type === 'mansard' || (r.type !== 'flat' && r.type !== 'surface' && r.b > 0 && (r.ridge - r.eaves) / r.b >= 0.7));
+  const eaves = parts.length ? Math.min(...parts.map((r) => r.eaves)) : b.top;
+  const tagged = parseInt(b.tags['building:levels'] ?? '', 10);
+  if (tagged > 0) {
+    const roofLevels = parseInt(b.tags['roof:levels'] ?? '', 10);
+    return Math.max(1, tagged - (roofLevels > 0 ? roofLevels : attic ? 1 : 0));
+  }
+  return Math.max(1, Math.round((eaves - b.ground) / 3.2));
+}
+
 export function buildFacades(buildings: Building[], entrances: Entrance[], origin: XY, opt: FacadeOptions = DEFAULT_FACADE): FacadeResult {
   const win: { name: string; mesh: Mesh }[] = [], door: { name: string; mesh: Mesh }[] = [], band: { name: string; mesh: Mesh }[] = [];
   const stats = { windows: 0, doors: 0, courses: 0, capped: false };
@@ -64,7 +81,7 @@ export function buildFacades(buildings: Building[], entrances: Entrance[], origi
 
   for (let bi = 0; bi < buildings.length && boxes() < opt.maxBoxes; bi++) {
     const b = buildings[bi];
-    const levels = levelsOf(b);
+    const levels = wallLevels(b);
     const top = b.roofParts?.length ? Math.min(...b.roofParts.map((r) => r.eaves)) : b.top;
     const storey = (top - b.ground) / levels;
     if (storey < 2) continue;

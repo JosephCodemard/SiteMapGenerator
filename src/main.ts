@@ -4,7 +4,7 @@ import { buildingAttributesCsv } from './export/attributes';
 import { attachListed, fetchListed } from './data/nhle';
 import { fetchSite, MAX_AREA_KM2, rasterToAsc, siteToGeoJson, type SiteInputs } from './data/site';
 import { parseGridRef, toBNG, toWGS } from './geo/bng';
-import { buildingHeights, DEFAULT_HEIGHTS, type HeightOptions } from './process/buildings';
+import { attachParts, buildingHeights, DEFAULT_HEIGHTS, type HeightOptions } from './process/buildings';
 import { contourBands, contourLevels, contourLines, type ContourLine } from './process/contours';
 import { stepForTriangles, terrainTriangles, type Mesh } from './process/mesh';
 import { blur, downsample, hillshade, minMax } from './process/raster';
@@ -30,6 +30,10 @@ import { writeStl } from './export/stl';
 import { initAnalysis } from './ui/analysis';
 import { decodeState, encodeState, friendlyError } from './ui/state';
 import { loadImagery, type Imagery } from './data/imagery';
+import { applyImagery, pixelsOf } from './process/imagery';
+import { buildContext } from './process/context';
+import { axonSvg, DEFAULT_AXON } from './export/axon';
+import { STYLES, type StyleId } from './export/styles';
 import { AreaMap } from './view/map';
 import { Viewer3D } from './view/viewer3d';
 import { bboxOf, clipPolygonToShape, normaliseShape, polygonArea } from './process/shape';
@@ -233,12 +237,16 @@ function readSettings(): ModelSettings {
     roads: checked('fRoads'),
     paths: checked('fPaths'),
     rail: checked('fRail'),
+    pavements: checked('fPavements'),
+    earthworks: checked('fEarth'),
     water: checked('fWater'),
     green: checked('fGreen'),
     bridges: checked('fBridges'),
     walls: checked('fWalls'),
     trees: checked('fTrees') ? (sel('treeMode') as ModelSettings['trees']) : 'off',
     roofDetails: true,
+    roofWindows: checked('fRoofWin'),
+    complexRoofs: checked('fComplex'),
     markings: checked('fMarkings'),
     facades: checked('fFacades'),
     reliefMm: num('reliefMm') || DEFAULT_SETTINGS.reliefMm,
@@ -251,7 +259,7 @@ function readSettings(): ModelSettings {
 function drawingFeatures(): DrawingFeatures {
   const s = readSettings();
   return {
-    buildings: s.buildings !== 'off', roads: s.roads, paths: s.paths, rail: s.rail, water: s.water, green: s.green,
+    buildings: s.buildings !== 'off', roads: s.roads, paths: s.paths, pavements: s.pavements, earthworks: s.earthworks, rail: s.rail, water: s.water, green: s.green,
     bridges: s.bridges, walls: s.walls, markings: s.markings, roofs: s.buildings === 'lod15' || s.buildings === 'lod2fit',
     trees: site ? treesFor(site, s.trees) : [],
   };
@@ -376,11 +384,13 @@ async function rebuildModel() {
     await stage('Heights…');
     const listed = new Map(s.buildings.filter((b) => b.listed).map((b) => [b.id, b.listed!]));
     s.buildings = buildingHeights(inputs!.footprints, s.dtm, s.dsm, heightOptions());
+    attachParts(s.buildings, inputs!.parts);
     for (const b of s.buildings) {
       b.listed = listed.get(b.id);
       const h = overrides.get(b.id);
       if (h) { b.top = b.ground + h; b.source = 'override'; }
     }
+    analyseImagery();
     if (settings.buildings === 'lod2' && s.buildings.length > 1500) {
       log(`LOD2 roofs for ${s.buildings.length} buildings can take a minute — raise “LIDAR-roof detail” to 2 m to speed it up.`);
     }
@@ -625,7 +635,7 @@ const TITLES: Record<DrawType, [string, string, number]> = {
 function titleBlock(title: string, suffix = '') {
   return {
     ...DEFAULT_BLOCK, project: $('tbProject').value, title: title + suffix, number: $('tbNumber').value, drawnBy: $('tbBy').value,
-    revision: $('tbRev').value, status: sel('tbStatus'),
+    revision: $('tbRev').value, status: sel('tbStatus'), checkedBy: $('tbChecked').value, approvedBy: $('tbApproved').value, client: $('tbClient').value,
   };
 }
 
@@ -643,7 +653,8 @@ function planSheet(type: DrawType) {
   const fit = fitScale(ew, eh, paper === 'auto' ? 'A0' : paper);
   if (scale < fit) { log(`${title}: 1:${scale} doesn't fit ${paper === 'auto' ? 'A0' : paper}; using 1:${fit}.`); scale = fit; }
   const r = writeSheet(drawingLayers(type), s.bbox, sheetSpec(scale, title), {
-    underlay: imagery && checked('imgUnderlay') ? imagery.canvas.toDataURL('image/jpeg', 0.85) : checked('hillshade') ? hillshadeDataUrl() : undefined, shape: s.shape,
+    underlay: imagery && checked('imgUnderlay') ? imagery.canvas.toDataURL('image/jpeg', 0.85) : checked('hillshade') || STYLES[sel('drawStyle') as StyleId].hillshade > 1 ? hillshadeDataUrl() : undefined, shape: s.shape,
+    style: STYLES[sel('drawStyle') as StyleId],
   });
   $('sheetInfo').textContent = `${title}: ${r.layout.paper} ${r.layout.landscape ? 'landscape' : 'portrait'} at 1:${scale}${r.layout.fits ? '' : ' — does not fit: raise the scale'}`;
   return { ...r, scale, title };
@@ -657,7 +668,7 @@ function sectionSheet(sec: { label: string; a: XY; b: XY }) {
   const { layers, bbox } = sectionLayers(data, opt);
   const scale = Math.max(100, fitScale(bbox.maxE - bbox.minE, (bbox.maxN - bbox.minN) / opt.exaggeration, (sel('paper') as Paper | 'auto') === 'auto' ? 'A3' : (sel('paper') as Paper)));
   const name = opt.mode === 'section' ? `Section ${sec.label}–${sec.label}` : `Elevation ${sec.label}–${sec.label}`;
-  const r = writeSheet(layers, bbox, { ...sheetSpec(scale, name), grid: false, notes: [`Looking left of the line A→B. Vertical exaggeration ×${opt.exaggeration}.`, 'Levels in metres above ODN.'] });
+  const r = writeSheet(layers, bbox, { ...sheetSpec(scale, name), grid: false, notes: [`Looking left of the line A→B. Vertical exaggeration ×${opt.exaggeration}.`, 'Levels in metres above ODN.'] }, { style: STYLES[sel('drawStyle') as StyleId] });
   return { ...r, layers, bbox, scale, name, data };
 }
 
@@ -718,7 +729,8 @@ async function exportPdf() {
   if (!(await prepareDrawing())) return;
   await busy('Building PDF pack', async () => {
     const pages: PdfPage[] = [];
-    const push = (r: { svg: string; layout: { w: number; h: number } }) => pages.push({ svg: r.svg, w: r.layout.w, h: r.layout.h });
+    // PDF has no SVG filters (shadows, pencil wobble): pages keep patterns and colours but drop them.
+    const push = (r: { svg: string; layout: { w: number; h: number } }) => pages.push({ svg: r.svg.replace(/ filter="url\(#[^"]+\)"/g, ''), w: r.layout.w, h: r.layout.h });
     if (redLine) push(planSheet('location'));
     push(planSheet('site'));
     if (site!.buildings.some((b) => b.roofParts || b.roof)) push(planSheet('roof'));
@@ -735,12 +747,14 @@ function renderSections() {
   sections.forEach((sec) => {
     const lab = document.createElement('label');
     lab.innerHTML = `<input type="radio" name="sec" ${sec.id === activeSection ? 'checked' : ''}/> ${sec.label}–${sec.label} <span class="hint">${Math.hypot(sec.b[0] - sec.a[0], sec.b[1] - sec.a[1]).toFixed(0)} m</span><button title="Remove">✕</button>`;
-    lab.querySelector('input')!.onchange = () => { activeSection = sec.id; };
-    lab.querySelector('button')!.onclick = (e) => { e.preventDefault(); sections = sections.filter((q) => q.id !== sec.id); renderSections(); areaMap.setCuts(sections); };
+    lab.querySelector('input')!.onchange = () => { activeSection = sec.id; refreshCuts(); };
+    lab.querySelector('button')!.onclick = (e) => { e.preventDefault(); sections = sections.filter((q) => q.id !== sec.id); renderSections(); refreshCuts(); };
     el.appendChild(lab);
   });
   if (!sections.find((q) => q.id === activeSection) && sections[0]) activeSection = sections[0].id;
 }
+
+function refreshCuts() { areaMap.setCuts(sections, activeSection); }
 
 const currentSection = () => sections.find((q) => q.id === activeSection);
 
@@ -815,6 +829,12 @@ async function exportData() {
 
 
 // ---------------------------------------------------------------- imagery, picking, packs, links, shortcuts
+/** Vegetation, roof colours and road paint from the user's image (when ticked and a site exists). */
+function analyseImagery() {
+  if (!site) return;
+  if (!imagery || !checked('imgAnalyse')) { site.vegetation = null; site.detectedMarkings = undefined; return; }
+  log(applyImagery(site, pixelsOf(imagery.canvas, imagery.bbox), buildContext(site).roads));
+}
 $('imgFile').onchange = async () => {
   const files = Array.from(($('imgFile') as HTMLInputElement).files ?? []);
   if (!files.length) return;
@@ -823,6 +843,7 @@ $('imgFile').onchange = async () => {
       imagery = await loadImagery(files, bbox, $('imgLicence').value.trim());
       $('imgStatus').textContent = `${imagery.name}: ~${imagery.sourceRes.toFixed(2)} m/pixel. ${imagery.note ?? ''} Rebuild the model to texture the terrain.`;
       log(`Imagery loaded (${imagery.name}). ${imagery.note ?? ''}`);
+      analyseImagery();
       if (scene) markStale();
     } catch (e) {
       imagery = null;
@@ -928,7 +949,7 @@ function restoreShare(): boolean {
   sections = (st.cuts ?? []).map((c, i) => ({ id: i + 1, label: String.fromCharCode(65 + (i % 26)), a: c.a, b: c.b }));
   activeSection = sections[0]?.id ?? 0;
   renderSections();
-  areaMap.setCuts(sections);
+  refreshCuts();
   log('Opened a shared site. Press “Fetch & align data” to load it.');
   return true;
 }
@@ -1029,17 +1050,32 @@ $('exportSvg').onclick = exportSvg;
 $('exportPng').onclick = exportPng;
 $('exportDxf').onclick = exportDxf;
 $('exportPdf').onclick = exportPdf;
+$('exportAxon').onclick = async () => {
+  if (!site) return;
+  await ensureModel();
+  await busy('Drawing the axonometric', async () => {
+    const r = axonSvg(scene!, site!.origin, { ...DEFAULT_AXON, style: STYLES[sel('drawStyle') as StyleId], block: titleBlock('Axonometric view') });
+    if (r.skipped.length) log(`Axonometric: skipped ${r.skipped.join(', ')} (too many faces for one SVG: raise the feature cell size or use a smaller site).`);
+    const el = $('view-drawing');
+    el.innerHTML = r.svg;
+    el.querySelector('svg')!.style.width = 'min(96%, 1400px)';
+    selectTab('drawing');
+    download(`site_${stamp()}_axonometric.svg`, r.svg, 'image/svg+xml');
+    log(`Axonometric: ${r.polygons.toLocaleString()} faces.`);
+  });
+};
 $('drawRedLine').onclick = () => { selectTab('map'); areaMap.setTool('polygon', 'redline'); log('Red line: click each corner, double-click or Enter to finish.'); };
 $('clearRedLine').onclick = () => { redLine = null; areaMap.setRedLine(null); };
 areaMap.onRedLine = (ring) => { redLine = normaliseShape(ring); };
 $('drawCut').onclick = () => { selectTab('map'); areaMap.setTool('cut'); log('Cut line: click the start (A), then the end (B). The view looks to the left of A→B.'); };
+areaMap.onCutSelect = (id) => { activeSection = id; renderSections(); refreshCuts(); log(`Section ${sections.find((q) => q.id === id)?.label ?? ''}–${sections.find((q) => q.id === id)?.label ?? ''} selected.`); };
 areaMap.onCut = (a, b) => {
   const id = (sections.at(-1)?.id ?? 0) + 1;
   const label = String.fromCharCode(64 + ((id - 1) % 26) + 1);
   sections.push({ id, label, a, b });
   activeSection = id;
   renderSections();
-  areaMap.setCuts(sections);
+  refreshCuts();
   log(`Cut line ${label}–${label} added (${Math.hypot(b[0] - a[0], b[1] - a[1]).toFixed(0)} m).`);
 };
 $('secPreview').onclick = secPreview;

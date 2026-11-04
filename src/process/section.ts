@@ -5,7 +5,7 @@ import { sample } from './raster';
 import { roofHeightAt } from './roofparts';
 import { clipPolylineToShape } from './shape';
 import type { Tree } from './trees';
-import type { Building, BBox, Ring, RoofFit, SiteData, XY } from '../types';
+import type { Building, BBox, Raster, Ring, RoofFit, SiteData, XY } from '../types';
 
 /**
  * Side-elevation slice: the user draws a cut line A-B on the plan and gets a height profile looking to the
@@ -56,12 +56,12 @@ function inside(a: XY, b: XY, rings: Ring[]): Interval[] {
   return out.filter(([s, e]) => e - s > 0.05 && s >= -1e-6 && e <= L + 1e-6);
 }
 
-function roofTop(b: Building, e: number, n: number): number {
+function roofTop(b: Building, e: number, n: number, dsm?: Raster | null): number {
   const fits: RoofFit[] = b.roofParts ?? (b.roof ? [b.roof] : []);
   for (const f of fits) {
     const dx = e - f.centre[0], dy = n - f.centre[1];
     const u = dx * f.axis[0] + dy * f.axis[1], v = -dx * f.axis[1] + dy * f.axis[0];
-    if (Math.abs(u) <= f.a + 0.5 && Math.abs(v) <= f.b + 0.5) return f.type === 'flat' ? Math.max(f.eaves, b.ground + 2) : roofHeightAt(f, e, n);
+    if (Math.abs(u) <= f.a + 0.5 && Math.abs(v) <= f.b + 0.5) return f.type === 'flat' ? Math.max(f.eaves, b.ground + 2) : f.type === 'surface' && dsm ? sample(dsm, e, n) : roofHeightAt(f, e, n);
   }
   return b.top;
 }
@@ -89,7 +89,7 @@ export function buildSection(site: SiteData, trees: Tree[], a: XY, b: XY, opt: S
         const top: [number, number][] = [], gr: [number, number][] = [];
         for (let i = 0; i <= n; i++) {
           const t = t0 + ((t1 - t0) * i) / n, [e, nn] = at(t);
-          top.push([t, roofTop(bd, e, nn)]); gr.push([t, gz(t)]);
+          top.push([t, roofTop(bd, e, nn, site.dsm)]); gr.push([t, gz(t)]);
         }
         sec.cuts.push({ id: cut.length > 1 ? `${bd.id}_${k + 1}` : bd.id, t0, t1, ground: gr, top });
         sec.zmax = Math.max(sec.zmax, ...top.map((q) => q[1]));

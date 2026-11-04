@@ -1,4 +1,5 @@
-import { bufferLines, lineWidth, parseMetres, unionPolygons, type Polygon } from './buffer';
+import { bufferLines, differencePolygons, lineWidth, parseMetres, unionPolygons, type Polygon } from './buffer';
+import { buildPavements, findEarthworks, type Earthworks } from './network';
 import { rasterizePolygons } from './geom';
 import { resample } from './ribbon';
 import type { AreaFeature, LineFeature, Ring, SiteData } from '../types';
@@ -23,6 +24,16 @@ export interface WallLine {
 export interface Context {
   roads: Polygon[];
   paths: Polygon[];
+  /** Pavements beside roads (tagged, mapped footway=sidewalk, or inferred along building frontage), disjoint from roads. */
+  pavements: Polygon[];
+  /** Carriageway outlines (kerb lines). */
+  kerbs: Ring[];
+  inferredPavementM: number;
+  mappedPavementM: number;
+  /** Embankments, cuttings and river banks (steep ground beside corridors) and OSM edge lines. */
+  earthworks: Earthworks;
+  /** Weir / dam lines across rivers. */
+  weirs: Ring[];
   rail: Polygon[];
   /** Water polygons plus buffered river/canal centrelines, merged. */
   water: Polygon[];
@@ -47,8 +58,10 @@ export function buildContext(site: SiteData): Context {
   const buf = (ls: LineFeature[]) => bufferLines(ls.map((l) => ({ coords: l.coords, width: lineWidth(l) })), bbox);
 
   const roads = buf(site.lines.filter((l) => solid(l) && (l.kind === 'road-major' || l.kind === 'road-minor')));
-  const paths = buf(site.lines.filter((l) => solid(l) && l.kind === 'path'));
-  const rail = buf(site.lines.filter((l) => solid(l) && l.kind === 'rail'));
+  const pave = buildPavements(site, roads);
+  // Disjoint classes: carriageway first, then pavement, then the remaining paths; rail yields to roads (level crossings).
+  const paths = differencePolygons(buf(site.lines.filter((l) => solid(l) && l.kind === 'path' && l.tags.footway !== 'sidewalk' && l.tags.footway !== 'crossing')), [...roads, ...pave.pavements], bbox);
+  const rail = differencePolygons(buf(site.lines.filter((l) => solid(l) && l.kind === 'rail')), roads, bbox);
 
   // Water: OSM water polygons, plus river centrelines that no polygon already covers.
   const waterAreas = site.areas.filter((a) => a.kind === 'water').map((a) => a.rings);
@@ -80,8 +93,10 @@ export function buildContext(site: SiteData): Context {
     };
   });
 
+  const earthworks = findEarthworks(site, [...roads, ...rail, ...water]);
   const ctx: Context = {
-    roads, paths, rail, water, bridges, walls,
+    roads, paths, rail, water, bridges, walls, pavements: pave.pavements, kerbs: pave.kerbs, inferredPavementM: pave.inferredMetres, mappedPavementM: pave.mappedMetres,
+    earthworks, weirs: site.lines.filter((l) => l.kind === 'weir').map((l) => l.coords),
     areas: site.areas.filter((a) => a.kind === 'green' || a.kind === 'wood' || a.kind === 'paved')
       .map((a) => ({ id: a.id, kind: a.kind, polygon: a.rings })),
   };

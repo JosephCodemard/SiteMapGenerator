@@ -62,6 +62,32 @@ export function roofZ(type: 'gable' | 'hip', e: number, r: number, a: number, b:
   return e + s * Math.max(0, d);
 }
 
+/** Height of a piecewise-linear roof profile `[t, z][]` at horizontal distance `t` in from the wall. */
+export function profileZ(profile: [number, number][], t: number): number {
+  if (t <= profile[0][0]) return profile[0][1];
+  for (let k = 1; k < profile.length; k++) {
+    const [t1, z1] = profile[k], [t0, z0] = profile[k - 1];
+    if (t <= t1) return t1 > t0 ? z0 + ((z1 - z0) * (t - t0)) / (t1 - t0) : z1;
+  }
+  return profile[profile.length - 1][1];
+}
+
+/** Distance in from the wall for a mansard roof point (box coordinates). */
+export const profileT = (f: RoofFit, u: number, v: number): number =>
+  f.hipped ? Math.min(f.b - Math.abs(v), f.a - Math.abs(u)) : f.b - Math.abs(v);
+
+/** Pitch of the main (upper) roof slope in degrees; 0 for flat roofs. */
+export function pitchDeg(f: RoofFit): number {
+  if (f.type === 'gable' || f.type === 'hip') return (Math.atan((f.ridge - f.eaves) / f.b) * 180) / Math.PI;
+  if (f.type === 'shed' && f.plane) return (Math.atan(Math.hypot(f.plane[1], f.plane[2])) * 180) / Math.PI;
+  if (f.type === 'mansard' && f.profile && f.profile.length > 1) {
+    // The upper slope is what reads as "the roof" on a plan; the steep lower slope is shown as a break line.
+    const [t0, z0] = f.profile[f.profile.length - 2], [t1, z1] = f.profile[f.profile.length - 1];
+    return t1 > t0 ? (Math.atan((z1 - z0) / (t1 - t0)) * 180) / Math.PI : 0;
+  }
+  return 0;
+}
+
 /**
  * Choose flat / gable / hip for a building by comparing each shape's RMS error
  * against the LIDAR surface inside the footprint. Returns null when the
@@ -140,6 +166,24 @@ export function roofLines(f: RoofFit): { ridge: [XY, XY] | null; hips: [XY, XY][
       ? { ridge: [pt(Math.sign(pa) * a, -b), pt(Math.sign(pa) * a, b)], hips: [], z: f.ridge }
       : { ridge: [pt(-a, Math.sign(pb) * b), pt(a, Math.sign(pb) * b)], hips: [], z: f.ridge };
   }
+  if (f.type === 'mansard' && f.profile) {
+    // Break lines (where the steep slope meets the upper one) as closed rectangles, and the top edge / ridge.
+    const lines: [XY, XY][] = [];
+    const rect = (t: number): XY[] => {
+      const hu = f.hipped ? Math.max(0, a - t) : a, hv = Math.max(0, b - t);
+      return [pt(-hu, -hv), pt(hu, -hv), pt(hu, hv), pt(-hu, hv)];
+    };
+    let ridge: [XY, XY] | null = null;
+    f.profile.slice(1).forEach(([t], i, arr) => {
+      const r = rect(t);
+      if (i === arr.length - 1) {
+        // The top: a ridge line when it closes to a point, else the edges of the flat top.
+        if (b - t < 0.3) { ridge = [pt(-(f.hipped ? Math.max(0, a - b) : a), 0), pt(f.hipped ? Math.max(0, a - b) : a, 0)]; return; }
+      }
+      for (let q = 0; q < 4; q++) lines.push([r[q], r[(q + 1) % 4]]);
+    });
+    return { ridge, hips: lines, z: f.ridge };
+  }
   const k = f.type === 'gable' ? a : Math.max(0, a - b);
   const hips: [XY, XY][] = f.type === 'hip'
     ? [[pt(-a, -b), pt(-k, 0)], [pt(-a, b), pt(-k, 0)], [pt(a, -b), pt(k, 0)], [pt(a, b), pt(k, 0)]]
@@ -150,6 +194,7 @@ export function roofLines(f: RoofFit): { ridge: [XY, XY] | null; hips: [XY, XY][
 /** Planar roof regions in box coordinates, each with its height function. */
 function roofRegions(f: RoofFit): { uv: XY[]; z: (u: number, v: number) => number }[] {
   const { a, b, eaves: e, ridge: r } = f;
+  if (f.type === 'mansard' && f.profile) return profileRegions(f);
   const s = (r - e) / b;
   if (f.type === 'gable') {
     return [
@@ -166,9 +211,35 @@ function roofRegions(f: RoofFit): { uv: XY[]; z: (u: number, v: number) => numbe
   ];
 }
 
+/** Planar facets of a mansard (profile) roof: one band per profile segment on each sloping side. */
+function profileRegions(f: RoofFit): { uv: XY[]; z: (u: number, v: number) => number }[] {
+  const { a, b } = f, prof = f.profile!;
+  const out: { uv: XY[]; z: (u: number, v: number) => number }[] = [];
+  const dedupe = (pts: XY[]) => pts.filter((p, i) => { const q = pts[(i + pts.length - 1) % pts.length]; return Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6; });
+  for (let k = 0; k + 1 < prof.length; k++) {
+    const [t0, z0] = prof[k], [t1, z1] = prof[k + 1];
+    if (t1 - t0 < 1e-6) continue;
+    const zt = (t: number) => z0 + ((z1 - z0) * (t - t0)) / (t1 - t0);
+    if (!f.hipped) {
+      for (const sg of [1, -1]) {
+        out.push({ uv: dedupe([[-a, sg * (b - t0)], [a, sg * (b - t0)], [a, sg * (b - t1)], [-a, sg * (b - t1)]]), z: (_u, v) => zt(b - Math.abs(v)) });
+      }
+      continue;
+    }
+    const A0 = a - t0, B0 = b - t0, A1 = Math.max(0, a - t1), B1 = Math.max(0, b - t1);
+    out.push(
+      { uv: dedupe([[-A0, B0], [A0, B0], [A1, B1], [-A1, B1]]), z: (_u, v) => zt(b - Math.abs(v)) },
+      { uv: dedupe([[A0, -B0], [-A0, -B0], [-A1, -B1], [A1, -B1]]), z: (_u, v) => zt(b - Math.abs(v)) },
+      { uv: dedupe([[A0, -B0], [A0, B0], [A1, B1], [A1, -B1]]), z: (u) => zt(a - Math.abs(u)) },
+      { uv: dedupe([[-A0, B0], [-A0, -B0], [-A1, -B1], [-A1, B1]]), z: (u) => zt(a - Math.abs(u)) },
+    );
+  }
+  return out;
+}
+
 /** Closed LOD1.5 solid for a building with a gable or hip roof; null when the fit is flat. */
 export function roofedBuildingMesh(b: Building, f: RoofFit, origin: XY, floorZ: number): Mesh | null {
-  if (f.type === 'flat' || f.type === 'shed') return null;
+  if (f.type === 'flat' || f.type === 'shed' || f.type === 'surface') return null;
   const { centre: [cx, cy], axis: [ux, uy] } = f;
   const toLocal = (u: number, v: number): [number, number] => [cx + u * ux - v * uy - origin[0], cy + u * uy + v * ux - origin[1]];
   const toBox = (x: number, y: number): [number, number] => {

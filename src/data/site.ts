@@ -2,9 +2,9 @@ import { fetchLidar } from './lidar';
 import { clipToShape, fetchOsm, parseOsm, shiftAndClip, type OsmFootprint } from './osm';
 import { polygonArea } from '../process/shape';
 import { estimateOffset } from '../process/align';
-import { buildingHeights, type HeightOptions } from '../process/buildings';
+import { attachParts, buildingHeights, type HeightOptions } from '../process/buildings';
 import { fillNoData } from '../process/raster';
-import type { BBox, Raster, Ring, SiteData } from '../types';
+import type { BBox, BuildingPart, Raster, Ring, SiteData } from '../types';
 
 export const MAX_AREA_KM2 = 4;
 
@@ -25,6 +25,7 @@ export type Log = (msg: string) => void;
 /** Raw inputs kept so building heights can be recomputed without refetching. */
 export interface SiteInputs {
   footprints: OsmFootprint[];
+  parts: BuildingPart[];
 }
 
 /** Fetch DTM, DSM and OSM for a BNG bbox and align them into one dataset. */
@@ -69,11 +70,13 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
   let osm = rawOsm ? shiftAndClip(rawOsm, offset, bbox) : null;
   if (osm && opts.shape) osm = clipToShape(osm, opts.shape);
   const footprints = osm?.buildings ?? [];
+  const buildings = buildingHeights(footprints, dtm, dsm, opts.heights);
+  attachParts(buildings, osm?.parts ?? []);
   const site: SiteData = {
     bbox,
     origin: [Math.round((bbox.minE + bbox.maxE) / 20) * 10, Math.round((bbox.minN + bbox.maxN) / 20) * 10],
     dtm, dsm,
-    buildings: buildingHeights(footprints, dtm, dsm, opts.heights),
+    buildings,
     lines: osm?.lines ?? [],
     areas: osm?.areas ?? [],
     trees: osm?.trees ?? [],
@@ -83,7 +86,7 @@ export async function fetchSite(bbox: BBox, opts: FetchOptions, log: Log, signal
     fetchedAt: new Date().toISOString(),
     filledCells: filled,
   };
-  return { site, inputs: { footprints } };
+  return { site, inputs: { footprints, parts: osm?.parts ?? [] } };
 }
 
 /** ESRI ASCII grid (opens in QGIS, ArcGIS, Rhino plugins, Global Mapper). */
@@ -110,6 +113,7 @@ export function siteToGeoJson(site: SiteData): string {
     features.push({
       type: 'Feature', id: b.id,
       properties: { layer: 'building', ground_m: +b.ground.toFixed(2), top_m: +b.top.toFixed(2), height_m: +(b.top - b.ground).toFixed(2), height_source: b.source,
+        ...(b.roofColour ? { roof_colour: b.roofColour } : {}), ...(b.dormers ? { dormers_procedural: b.dormers.length } : {}),
         ...(b.roofParts ? { roof_parts: b.roofParts.map((r) => r.type).join(','), eaves_m: +Math.min(...b.roofParts.map((r) => r.eaves)).toFixed(2), ridge_m: +Math.max(...b.roofParts.map((r) => r.ridge)).toFixed(2) } : {}),
         ...(b.listed ? { listed_grade: b.listed.grade, listed_entry: b.listed.entry, listed_name: b.listed.name } : {}), ...b.tags },
       geometry: { type: 'Polygon', coordinates: b.rings.map(close) },

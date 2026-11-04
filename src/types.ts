@@ -20,7 +20,9 @@ export interface Raster {
 }
 
 export type LineKind =
-  | 'road-major' | 'road-minor' | 'path' | 'rail' | 'river' | 'stream' | 'wall';
+  | 'road-major' | 'road-minor' | 'path' | 'rail' | 'river' | 'stream' | 'wall'
+  /** Weirs and dams (across a river), embankments and cliffs (the top edge, drawn with ticks), quays and piers. */
+  | 'weir' | 'embankment' | 'cliff' | 'quay';
 export type AreaKind = 'water' | 'green' | 'wood' | 'paved' | 'bridge';
 
 export interface LineFeature {
@@ -61,7 +63,11 @@ export type HeightSource = 'lidar' | 'osm-height' | 'osm-levels' | 'default' | '
 
 /** Fitted roof shape for LOD1.5: a flat block, or a gable / hip over the footprint's oriented box. */
 export interface RoofFit {
-  type: 'flat' | 'shed' | 'gable' | 'hip';
+  /**
+   * flat / shed (mono-pitch) / gable / hip, `mansard` (a profile roof: steep lower slope then a shallower or flat top,
+   * with `profile`), or `surface` (a complex roof such as a church kept as the smoothed LIDAR surface).
+   */
+  type: 'flat' | 'shed' | 'gable' | 'hip' | 'mansard' | 'surface';
   /** Eaves and ridge, m ODN. */
   eaves: number;
   ridge: number;
@@ -74,6 +80,19 @@ export interface RoofFit {
   rmse: number;
   /** Shed roofs: plane z = c + a*u + b*v in box coordinates (u along `axis`, v across). */
   plane?: [number, number, number];
+  /** Mansard roofs: [t, z] break points from the eaves (t = 0, horizontal distance in from the wall) to the top (t = b). */
+  profile?: [number, number][];
+  /** Mansard roofs: the short ends slope too (hipped) rather than standing as vertical gable / party walls. */
+  hipped?: boolean;
+  /** Where the shape came from: LIDAR fit, or an OSM `roof:shape` tag. */
+  hint?: string;
+}
+
+/** A `building:part` polygon from OSM: a separately tagged volume (tower, nave, wing) inside a building. */
+export interface BuildingPart {
+  id: string;
+  rings: Ring[];
+  tags: Record<string, string>;
 }
 
 export interface Building {
@@ -91,6 +110,12 @@ export interface Building {
   roofParts?: RoofFit[];
   /** Historic England listing, if any. */
   listed?: ListedInfo;
+  /** OSM `building:part` volumes that lie inside this footprint (roof:shape, height, min_height ...). */
+  parts?: BuildingPart[];
+  /** Dormers and roof windows found or placed on the roofs (LOD2-fit). */
+  dormers?: { p: XY; width: number; procedural: boolean }[];
+  /** Mean roof colour from user imagery (#rrggbb). */
+  roofColour?: string;
 }
 
 /** The fetched, aligned dataset (everything in BNG / ODN heights). */
@@ -100,6 +125,10 @@ export interface SiteData {
   origin: XY;
   dtm: Raster;
   dsm: Raster | null;
+  /** Greenness 0-1 on a raster (from user imagery); roofs ignore LIDAR cells over vegetation. */
+  vegetation?: Raster | null;
+  /** Road paint found in user imagery (white / yellow blobs on the road surface). */
+  detectedMarkings?: { kind: 'detected'; colour: 'white' | 'yellow' | 'red'; ring: Ring }[];
   buildings: Building[];
   lines: LineFeature[];
   areas: AreaFeature[];

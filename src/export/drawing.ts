@@ -1,6 +1,6 @@
 import { buildContext } from '../process/context';
 import type { ContourLine } from '../process/contours';
-import { roofLines } from '../process/roofs';
+import { pitchDeg, roofLines } from '../process/roofs';
 import { clipPolylineToShape, pointInShape } from '../process/shape';
 import { offsetOutline, resample } from '../process/ribbon';
 import { buildMarkings } from '../process/markings';
@@ -19,6 +19,9 @@ export interface Layer {
   weight: number;
   fill?: string;
   dash?: string;
+  /** SVG filter / opacity for the layer group (drawing styles: shadows, pencil wobble). */
+  filter?: string;
+  opacity?: number;
   items: Item[];
 }
 
@@ -35,6 +38,8 @@ export interface DrawingFeatures {
   buildings: boolean;
   roads: boolean;
   paths: boolean;
+  pavements: boolean;
+  earthworks: boolean;
   rail: boolean;
   water: boolean;
   green: boolean;
@@ -49,7 +54,7 @@ export interface DrawingFeatures {
 }
 
 export const ALL_FEATURES: DrawingFeatures = {
-  buildings: true, roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, markings: true, trees: [], roofs: true,
+  buildings: true, roads: true, paths: true, pavements: true, earthworks: true, rail: true, water: true, green: true, bridges: true, walls: true, markings: true, trees: [], roofs: true,
 };
 
 export interface DrawingOptions {
@@ -64,13 +69,16 @@ export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
   { name: 'GREEN', label: 'Parks & green space', stroke: '#9cc28a', aci: 82, weight: 0.13, fill: '#e3f0da' },
   { name: 'WOOD', label: 'Woodland', stroke: '#7aa56a', aci: 94, weight: 0.13, fill: '#cfe3c3' },
   { name: 'PAVED', label: 'Squares & pedestrian areas', stroke: '#c9c2b8', aci: 254, weight: 0.13, fill: '#f1ede7' },
+  { name: 'EARTHWORKS', label: 'Embankments, cuttings & banks (terrain > 18°)', stroke: '#b9a878', aci: 43, weight: 0.13, fill: '#e9e0c4' },
   { name: 'WATER', label: 'Rivers & water bodies', stroke: '#5b9bd5', aci: 150, weight: 0.18, fill: '#cfe4f7' },
   { name: 'WATERWAY', label: 'River centrelines', stroke: '#3d7fc4', aci: 150, weight: 0.13, dash: '2 1' },
   { name: 'CONTOUR-MINOR', label: 'Contours (minor)', stroke: '#b08a5a', aci: 33, weight: 0.13 },
   { name: 'CONTOUR-MAJOR', label: 'Contours (major)', stroke: '#8a5a2b', aci: 32, weight: 0.3 },
   { name: 'CONTOUR-LABEL', label: 'Contour labels', stroke: '#8a5a2b', aci: 32, weight: 0.13 },
   { name: 'PATH', label: 'Footpaths & cycleways', stroke: '#8c8c8c', aci: 8, weight: 0.13, fill: '#f4efe6' },
-  { name: 'ROAD-SURFACE', label: 'Roads (kerb lines)', stroke: '#333333', aci: 251, weight: 0.25, fill: '#ebebeb' },
+  { name: 'PAVEMENT', label: 'Pavements (mapped or inferred)', stroke: '#b9b3a6', aci: 9, weight: 0.13, fill: '#f3efe6' },
+  { name: 'ROAD-SURFACE', label: 'Roads (carriageway)', stroke: '#333333', aci: 251, weight: 0.25, fill: '#ebebeb' },
+  { name: 'KERB', label: 'Kerb lines', stroke: '#333333', aci: 251, weight: 0.25 },
   { name: 'ROAD-MINOR', label: 'Minor road centrelines', stroke: '#777777', aci: 9, weight: 0.13, dash: '3 1' },
   { name: 'ROAD-MAJOR', label: 'Major road centrelines', stroke: '#555555', aci: 8, weight: 0.18, dash: '3 1' },
   { name: 'ROAD-MARK', label: 'Road markings (white)', stroke: '#8a8a8a', aci: 7, weight: 0.05, fill: '#ffffff' },
@@ -80,6 +88,8 @@ export const LAYER_DEFS: Omit<Layer, 'items'>[] = [
   { name: 'RAIL', label: 'Railways', stroke: '#000000', aci: 7, weight: 0.35, fill: '#e2dfdb' },
   { name: 'RAIL-CL', label: 'Railway centrelines', stroke: '#000000', aci: 7, weight: 0.25, dash: '3 1' },
   { name: 'BRIDGE', label: 'Bridges', stroke: '#d0342c', aci: 1, weight: 0.5, fill: '#f6d9d6' },
+  { name: 'EARTH-EDGE', label: 'Embankment / cliff edges (OSM)', stroke: '#6b5a44', aci: 30, weight: 0.25 },
+  { name: 'WEIR', label: 'Weirs & dams', stroke: '#2b5d9b', aci: 150, weight: 0.5 },
   { name: 'WALL', label: 'Walls & fences', stroke: '#6b5a44', aci: 30, weight: 0.25 },
   { name: 'BUILDINGS', label: 'Building footprints', stroke: '#1a1a1a', aci: 7, weight: 0.35, fill: '#d9d4cc' },
   { name: 'REDLINE', label: 'Red-line boundary', stroke: '#e00000', aci: 1, weight: 0.7 },
@@ -101,10 +111,12 @@ export function defaultLayerToggles(): Record<string, boolean> {
 
 /** Which drawing layers belong to each feature switch (so one checkbox controls model and drawing). */
 export const FEATURE_LAYERS: Record<string, string[]> = {
-  roads: ['ROAD-SURFACE', 'ROAD-MINOR', 'ROAD-MAJOR', 'ROAD-MARK', 'ROAD-MARK-Y', 'ROAD-MARK-CYCLE'],
+  roads: ['ROAD-SURFACE', 'KERB', 'ROAD-MINOR', 'ROAD-MAJOR', 'ROAD-MARK', 'ROAD-MARK-Y', 'ROAD-MARK-CYCLE'],
   paths: ['PATH'],
+  pavements: ['PAVEMENT'],
+  earthworks: ['EARTHWORKS', 'EARTH-EDGE'],
   rail: ['RAIL', 'RAIL-CL'],
-  water: ['WATER', 'WATERWAY'],
+  water: ['WATER', 'WATERWAY', 'WEIR'],
   green: ['GREEN', 'WOOD', 'PAVED'],
   bridges: ['BRIDGE'],
   walls: ['WALL'],
@@ -127,7 +139,16 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
 
   if (f.green) for (const a of ctx.areas) add(AREA_LAYER[a.kind], { t: 'poly', rings: a.polygon });
   if (f.water) for (const p of ctx.water) add('WATER', { t: 'poly', rings: p });
-  if (f.roads) for (const p of ctx.roads) add('ROAD-SURFACE', { t: 'poly', rings: p });
+  if (f.earthworks) {
+    for (const p of ctx.earthworks.areas) add('EARTHWORKS', { t: 'poly', rings: p });
+    for (const e of ctx.earthworks.edges) add('EARTH-EDGE', { t: 'line', pts: e.coords });
+  }
+  if (f.pavements) for (const p of ctx.pavements) add('PAVEMENT', { t: 'poly', rings: p });
+  if (f.roads) {
+    for (const p of ctx.roads) add('ROAD-SURFACE', { t: 'poly', rings: p });
+    for (const k of ctx.kerbs) add('KERB', { t: 'line', pts: k });
+  }
+  if (f.water) for (const w of ctx.weirs) add('WEIR', { t: 'line', pts: w });
   if (f.paths) for (const p of ctx.paths) add('PATH', { t: 'poly', rings: p });
   if (f.rail) for (const p of ctx.rail) add('RAIL', { t: 'poly', rings: p });
   if (f.bridges) {
@@ -211,9 +232,7 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
   if (f.buildings && f.roofs) {
     for (const b of site.buildings) {
       for (const r of b.roofParts ?? (b.roof ? [b.roof] : [])) {
-        let deg = 0;
-        if (r.type === 'gable' || r.type === 'hip') deg = (Math.atan((r.ridge - r.eaves) / r.b) * 180) / Math.PI;
-        else if (r.type === 'shed' && r.plane) deg = (Math.atan(Math.hypot(r.plane[1], r.plane[2])) * 180) / Math.PI;
+        const deg = pitchDeg(r);
         if (deg >= 3) add('ROOF-PITCH', { t: 'text', p: r.centre, text: `${deg.toFixed(0)}°`, size: 1.5 });
       }
     }
@@ -252,14 +271,14 @@ export function layerSvg(layers: Layer[], X: (e: number) => string, Y: (n: numbe
   const out: string[] = [];
   for (const l of layers) {
     const dash = l.dash ? ` stroke-dasharray="${l.dash}"` : '';
-    out.push(`<g inkscape:groupmode="layer" inkscape:label="${l.name}" id="${l.name}" clip-path="url(#site)" ` +
+    out.push(`<g inkscape:groupmode="layer" inkscape:label="${l.name}" id="${l.name}" clip-path="url(#site)"${l.filter ? ` filter="${l.filter}"` : ''}${l.opacity !== undefined ? ` opacity="${l.opacity}"` : ''} ` +
       `stroke="${l.stroke}" stroke-width="${l.weight}" stroke-linejoin="round" stroke-linecap="round" fill="${l.fill ?? 'none'}"${dash}>`);
     for (const it of l.items) {
       if (it.t === 'line') out.push(`<path d="${path(it.pts, false)}"${it.dashed ? ' stroke-dasharray="1.5 1" opacity="0.6"' : ''} fill="none"/>`);
       else if (it.t === 'poly') out.push(`<path d="${it.rings.map((r) => path(r, true)).join('')}" fill-rule="evenodd"/>`);
       else if (it.t === 'circle') out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="none"/>`);
       else if (it.t === 'tree') {
-        out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="#4f8a3c" fill-opacity="0.14"/>` +
+        out.push(`<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${(it.r * k).toFixed(2)}" fill="${l.stroke}" fill-opacity="0.14"/>` +
           `<circle cx="${X(it.c[0])}" cy="${Y(it.c[1])}" r="${Math.max(0.25, 0.25 * k).toFixed(2)}" fill="${l.stroke}" stroke="none"/>`);
       }
       else {

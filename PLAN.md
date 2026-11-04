@@ -280,3 +280,44 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 | M6 Svelte migration | **not done, by decision**: see HANDOFF §7g |
 | M6 scene build in a Web Worker | **not done**: analyses are in a worker; the scene holds closures (`zAt`, `terrainSolid`) that would need a redesign to cross the thread boundary |
 | M6 vegetation index / marking refinement from imagery | **not done** (imagery is used for underlays and textures only) |
+
+## 10. Iteration 4 (2026-11-04): roofs, infrastructure, imagery, drawings, section-picking bug
+
+Requested: (1) better LIDAR roofs for Bath (churches, complex roofs, top floor in the roof with windows, imagery help); (2) bridges, roads, rail, rivers and embankments consistent with the topology, with pavements; (3) can open imagery be interpreted (pavements, markings), any FOSS? (4) better architectural drawings, standard and "artistic"; plus the bug "cannot select slices from the map".
+
+| Item | Status |
+|---|---|
+| **Bug: cut lines could not be drawn/selected on the map** | **fixed.** Cause: the cut tool shared the rectangle tool's `mouseup` handler, which called `finish(null)` and reset the tool before the second `click`. Now there is a live rubber-band line, Esc cancels, the active line is highlighted, and clicking a line on the map selects it. Verified with real mouse clicks (`tools/e2e/cut.mjs`) against the production build |
+| 1a Mansard / gambrel roofs (profile roofs: steep lower slope, shallower or flat top; gable- or hip-ended) | **done**: `RoofFit.type = 'mansard'` + `profile`; least-squares search over break distance and steep slope; judged on near-wall samples; requires BOTH long sides to drop away (outline misalignment only lowers one side) |
+| 1b Spires and pyramids | **done**: small square tower parts may rise up to 5x half-span |
+| 1c Churches and complex roofs | **done**: church tag relaxes thresholds; roofs no standard shape fits are kept as the smoothed (3x3 median) LIDAR surface (`type 'surface'`) instead of a flat block |
+| 1d OSM `roof:shape`, `min_height`, `building:part` | **done**: parts parsed, attached to the host building, each fitted separately; `roof:shape` restricts/biases the shape (and falls back if LIDAR contradicts it) |
+| 1e Top floor in the roof, with windows | **done**: dormers (closed solids buried in the roof) + window recesses placed on the bay rhythm of every outward-facing steep slope (not on party walls). PROCEDURAL, not surveyed (1 m LIDAR cannot resolve dormers). Facade storeys now exclude the attic (`wallLevels`), so the walls and the roof windows add up |
+| 1f Imagery help for roofs | **done (bring-your-own imagery)**: excess-green vegetation mask (LIDAR cells over trees ignored when fitting), mean roof colour per building (in CSV/GeoJSON) |
+| 2a Pavements and kerbs | **done**: from `sidewalk=*`, mapped `footway=sidewalk`, else INFERRED along building frontage (counted in the log); raised at the kerb in 3D; kerb lines in drawings |
+| 2b Disjoint ground features | **done**: carriageway > pavement > path > embankment > park/paved, buildings cover everything; rail yields to roads (level crossings) |
+| 2c Bridges | **done**: deck pinned to the approach road at both ends, parapets, abutments, piers under long deep spans, thickness grows with span; each a named closed solid |
+| 2d Embankments, cuttings, river banks | **done**: terrain > 18 degrees within 12 m of roads, rail and water becomes its own patch (3D layer + hatched drawing layer); OSM embankment/cliff/quay/weir lines drawn |
+| 2e Rivers | partly: banks as earthwork patches, weirs as drawing lines. Not done: monotone water level along flow, weir steps in 3D |
+| 3 Open imagery research | see section 11 |
+| 3b Imagery interpretation we CAN do | **done**: road paint (white/yellow blobs on asphalt) -> detected markings, needs pixels <= 30 cm |
+| 4a Drawing styles | **done**: standard, planning (B&W, ISO 128 weights, hatches), figure-ground, presentation (shadows, hillshade), sketch (pencil wobble, wash, pencil hatching, paper grain), blueprint |
+| 4b Standards on the sheet | **done**: ISO 19650 status codes, drawn/checked/approved, client, zone references round the border, "do not scale" note, standard scale list (1:100 ... 1:5000) |
+| 4c Axonometric | **done**: vector painter's-algorithm view of the 3D model, shaded faces, crease/boundary edges, any style, azimuth/elevation |
+| Not done | hidden-line axonometric of terrain-occluded buildings; SVG filters (shadow, wobble) are dropped in PDF; paper-space layouts in DXF; ML segmentation |
+
+## 11. Imagery: what is possible (researched 2026-11-04)
+
+**Open sources (no key, browser-readable, licensed for derived data)**: none at roof/kerb resolution.
+- EA Vertical Aerial Photography (Defra Data Services Platform): 10-50 cm, RGB/NIR, ECW tiles, project-by-project coverage. Licence per tile metadata (some older text says "all rights reserved"): check before use. Not live-queryable (our probe: tile index layers only), so it is a manual download -> import.
+- EA oblique aerial photography: OGL, but it is a photo archive, not an orthophoto: usable for looking, not for measuring.
+- NCAP (ncap.org.uk) historic oblique/vertical archive: viewing only.
+- Sentinel-2: 10 m, vegetation index only.
+- Bing/Esri/Google: terms forbid extraction and derived data.
+
+**Interpreting it, free and open-source** (all outside this app today):
+- Tile2Net (VIDA-NYU): sidewalks, crosswalks, roads, footpaths from orthophotos; Python, desktop GPU.
+- SAM / SlimSAM via transformers.js or ONNX Runtime Web: interactive in-browser segmentation of a clicked object (a roof, a pavement): a good next step for "click to trace".
+- SegFormer (Cityscapes weights, ONNX): road/sidewalk labels but trained on street-level photos, so it needs fine-tuning for aerial views.
+- OpenCV.js: the classical route (paint, edges, Hough) and what `process/imagery.ts` does without any model.
+Recommendation: keep the bring-your-own orthophoto path (done); add SAM click-to-trace for pavements and roofs as an opt-in step; do ML road/pavement extraction offline (Tile2Net) and import the polygons as GeoJSON.

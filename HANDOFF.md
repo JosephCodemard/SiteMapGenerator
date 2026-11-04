@@ -2,7 +2,7 @@
 
 _Status as of 2026-11-04. Iteration 1 (sections 1–6) was committed first; **iteration 2 (phases B and C, plus the UI rework) is described in section 7** and is committed on `main`._
 
-_Iteration 3 (PLAN.md milestones M1–M6) is done: see sections 7b–7g. What remains is listed in section 8 and in 7g's "not done" list._
+_Iteration 3 (PLAN.md milestones M1–M6) is done: see sections 7b–7g. **Iteration 4 (roofs, infrastructure, drawings, section-picking bug) is section 7h.** What remains is listed in section 8, 7g's and 7h's "not done" lists._
 
 ## 1. Goal and context
 
@@ -156,7 +156,7 @@ Fetch time is dominated by Overpass when it's busy; LIDAR is ≈ 5 s.
 ```bash
 npm install
 npm run dev                 # http://localhost:5173
-npm test                    # 51 unit tests (core + features)
+npm test                    # 156 unit tests
 npm run build               # dist/ (relative base, works under /<repo>/)
 
 # Optional end-to-end test (live services):
@@ -273,6 +273,33 @@ Done: `ui/state.ts` (share links, friendly errors), `data/imagery.ts`, viewer pi
 - *Scene build in a worker.* `Scene` carries closures (`terrainSolid`, `grid.zAt`) and big typed arrays; moving it needs a message-based redesign (return meshes + a sampler id). Analyses already run in a worker. The main thread is blocked for a few seconds on large sites during model builds.
 - *Imagery-based vegetation index and marking snapping:* imagery is display/texture only.
 Test harness notes: software WebGL is flaky under load (screenshots time out when stale Chromium processes are running: `pkill -f chromium`); a second page in the same context may never initialise the map, so test link reopening by reloading the same page.
+
+## 7h. Iteration 4 (2026-11-04)
+
+Full status table: PLAN.md section 10; imagery research: section 11. 156 tests (`npm test`), production build verified with `tools/e2e/drive.mjs` (all exports, analyses, new styles and axonometric, no console errors) and `tools/e2e/cut.mjs` (map cut lines with real clicks).
+
+**Bug fixed.** Cut lines could not be drawn on the map: `view/map.ts` ran the rectangle tool's `mouseup` for the cut tool, which reset the tool before the second click. The cut tool now has its own path, a rubber-band preview, Esc to cancel, an orange highlight for the active line and click-to-select (`onCutSelect`).
+
+**Roofs** (`process/roofparts.ts`, `roofs.ts`, `dormers.ts`, `facades.ts`):
+- New `RoofFit` types `mansard` (profile `[t, z][]`, optional `hipped`) and `surface` (complex roof kept as smoothed LIDAR). Mansard is judged on near-wall samples (inset 0.5 m), because at 1 m resolution the steep slope is one cell wide; it must show on both long sides. On real Royal Crescent/Circus data 63 of ~520 parts fit as mansards, 30 as surface: **not validated against ground truth**, so check a few by eye against imagery before relying on them.
+- OSM `roof:shape`, `min_height` and `building:part` are used (`Building.parts`, `attachParts`; `SiteInputs.parts` so a height rebuild keeps them). Parts only help where OSM has them; the Abbey extract had none.
+- Dormers are procedural (layer `dormers`, windows into `windows`): setting `roofWindows`. Facade wall storeys exclude a mansard/steep attic (`wallLevels`).
+- Imagery (`process/imagery.ts`): vegetation raster (`SiteData.vegetation`) masks tree returns in roof fits; roof colours; paint detection -> `SiteData.detectedMarkings` merged by `buildMarkings`. Triggered by `analyseImagery()` in `main.ts` (after loading an image and on every rebuild).
+- Settings `complexRoofs` (mansards + surface fallback) and `roofWindows`; UI rows in the feature table.
+
+**Infrastructure** (`process/network.ts`, `context.ts`, `bridges.ts`, `scene.ts`):
+- `Context` gained `pavements`, `kerbs`, `earthworks`, `weirs`, `inferredPavementM`, `mappedPavementM`; `paths` and `rail` are now made disjoint from roads/pavements. New Clipper helpers `differencePolygons`, `intersectPolygons`, `offsetPolygons`.
+- Pavements are inferred only where no sidewalk tag exists, the road class is residential or above, and at least half the sample points along a side have a building within 4.5 m and no mapped path within 3 m. They are INFERRED data: the setting `pavements` turns them off.
+- Scene layers `pavements` (raised by a kerb height above the road), `earthworks`; bridges are `buildBridge` parts (deck, parapets, abutments, piers). Ground features are subtracted from each other and from building footprints before draping.
+- OSM query additionally fetches `building:part`, weirs, embankments, cliffs, quays/piers (`LineKind`: weir, embankment, cliff, quay).
+- Not done: monotone river levels and 3D weirs; terrain re-triangulated around the road corridors; tunnel portals.
+
+**Drawings** (`export/styles.ts`, `sheet.ts`, `axon.ts`, `drawing.ts`):
+- `STYLES`/`applyStyle` restyle layers for SVG/PNG/PDF only (DXF keeps plain layers). New drawing layers PAVEMENT, KERB, EARTHWORKS, EARTH-EDGE, WEIR (NCS names added; `ROAD-SURFACE` now maps to `C-ROAD-PVMT`, `KERB` to `C-ROAD-KERB`).
+- Sheet: style paper/ink/font, ISO 19650 status, checked/approved/client, zone references, do-not-scale note.
+- Axonometric: `axonSvg(scene, origin, opts)`, button "Axonometric (SVG)". Face budget 90 000; layers over budget are skipped and reported. PDF export strips `filter=` attributes (svg2pdf has no filters), so the sketch style loses its wobble and shadows there.
+
+**Optional real-data test:** `BATH_DATA=<dir> npx vitest run tests/real-bath.test.ts` with `rc_dsm.tif`, `rc_dtm.tif` (EA WCS) in the directory; the Overpass extract is fetched once and cached. `tests/helpers/bath.ts` can build a `SiteData` offline for any area.
 
 ## 8. Next steps
 

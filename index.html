@@ -66,6 +66,7 @@
           <label>Licence / source note (kept in exports)<input id="imgLicence" placeholder="e.g. © client, OS licence no. …" data-persist /></label>
           <label class="inline"><input type="checkbox" id="imgUnderlay" checked /> Underlay for drawings</label>
           <label class="inline"><input type="checkbox" id="imgTexture" checked /> Texture for the 3D terrain</label>
+          <label class="inline"><input type="checkbox" id="imgAnalyse" checked data-persist /> Read the image: vegetation (cleaner roofs), roof colours, road paint</label>
           <div id="imgStatus" class="hint"></div>
         </details>
         <button id="fetch" class="primary">Fetch &amp; align data</button>
@@ -103,9 +104,13 @@
               </select>
             </td>
           </tr>
+          <tr><td><input type="checkbox" id="fRoofWin" checked data-persist /></td><td>Dormers &amp; roof windows</td><td class="opt" title="Top-floor windows in mansard and steep roofs (LOD2-fit): generated on the bay rhythm, not surveyed">top floor, procedural</td></tr>
+          <tr><td><input type="checkbox" id="fComplex" checked data-persist /></td><td>Mansards &amp; complex roofs</td><td class="opt" title="LOD2-fit: detect mansard roofs; keep churches and other roofs that no standard shape fits as the LIDAR surface">churches, mansards</td></tr>
           <tr><td><input type="checkbox" id="fFacades" data-persist /></td><td>Facade detail</td><td class="opt" title="Windows, doors, string courses: generated, not surveyed">procedural</td></tr>
           <tr><td><input type="checkbox" id="fRoads" checked data-persist /></td><td>Roads</td><td class="opt">real width, kerbs</td></tr>
           <tr><td><input type="checkbox" id="fMarkings" checked data-persist /></td><td>Road markings</td><td class="opt">from OSM tags</td></tr>
+          <tr><td><input type="checkbox" id="fPavements" checked data-persist /></td><td>Pavements</td><td class="opt" title="From sidewalk tags and mapped footways; where OSM has none, inferred along building frontage (flagged in the log)">kerb height, inferred where unmapped</td></tr>
+          <tr><td><input type="checkbox" id="fEarth" checked data-persist /></td><td>Embankments &amp; banks</td><td class="opt" title="Terrain steeper than 18° beside roads, rail and rivers, as separate patches">from the terrain</td></tr>
           <tr><td><input type="checkbox" id="fPaths" checked data-persist /></td><td>Paths &amp; steps</td><td class="opt"></td></tr>
           <tr><td><input type="checkbox" id="fRail" checked data-persist /></td><td>Railways</td><td class="opt"></td></tr>
           <tr><td><input type="checkbox" id="fWater" checked data-persist /></td><td>Rivers &amp; water</td><td class="opt">carved into terrain</td></tr>
@@ -335,8 +340,8 @@
         <div class="grid3">
           <label>Scale
             <select id="drawScale" data-persist>
-              <option value="200">1:200</option><option value="500">1:500</option><option value="1000" selected>1:1000</option>
-              <option value="1250">1:1250</option><option value="2500">1:2500</option>
+              <option value="100">1:100</option><option value="200">1:200</option><option value="250">1:250</option><option value="500">1:500</option><option value="1000" selected>1:1000</option>
+              <option value="1250">1:1250</option><option value="2000">1:2000</option><option value="2500">1:2500</option><option value="5000">1:5000</option>
             </select>
           </label>
           <label>PNG DPI
@@ -344,6 +349,16 @@
           </label>
           <label class="inline"><input type="checkbox" id="hillshade" data-persist /> Hillshade</label>
         </div>
+        <label>Drawing style
+          <select id="drawStyle" data-persist>
+            <option value="standard">Standard (colour)</option>
+            <option value="planning">Planning: black &amp; white, ISO 128 weights, hatched</option>
+            <option value="figure-ground">Figure-ground (solid black buildings)</option>
+            <option value="presentation">Presentation: soft colour, shadows, hillshade</option>
+            <option value="sketch">Sketch: hand-drawn pencil &amp; wash</option>
+            <option value="blueprint">Blueprint: white on blue</option>
+          </select>
+        </label>
         <label>Drawing type
           <select id="drawType" data-persist>
             <option value="site">Site plan</option>
@@ -359,7 +374,10 @@
             <label>Project<input id="tbProject" value="Site model" data-persist /></label>
             <label>Drawing no.<input id="tbNumber" value="SP-001" data-persist /></label>
             <label>Drawn by<input id="tbBy" data-persist /></label>
-            <label>Status<select id="tbStatus" data-persist><option>For information</option><option>For planning</option><option>For construction</option><option>Preliminary</option></select></label>
+            <label>Checked by<input id="tbChecked" data-persist /></label>
+            <label>Approved by<input id="tbApproved" data-persist /></label>
+            <label>Client<input id="tbClient" data-persist /></label>
+            <label>Status (ISO 19650)<select id="tbStatus" data-persist><option>S0 Work in progress</option><option>S1 Suitable for coordination</option><option selected>S2 Suitable for information</option><option>S3 Suitable for review and comment</option><option>S4 Suitable for stage approval</option><option>A1 Authorised and accepted</option><option>For planning</option><option>For construction</option></select></label>
           </div>
           <label class="inline"><input type="checkbox" id="sheetLegend" checked data-persist /> Key (legend) from the layers drawn</label>
           <label class="inline"><input type="checkbox" id="sheetGrid" checked data-persist /> BNG grid ticks</label>
@@ -380,6 +398,7 @@
         </details>
         <div class="grid2 buttons">
           <button id="previewDrawing">Preview drawing</button>
+          <button id="exportAxon" title="Axonometric / isometric vector drawing of the 3D model in the chosen style (builds the model first)">Axonometric (SVG)</button>
           <button id="exportPdf" title="Location plan (if a red line is drawn), site plan, roof plan and all sections as a multi-page PDF">PDF pack</button>
           <button id="exportSvg">SVG</button>
           <button id="exportPng">PNG</button>

@@ -1,9 +1,9 @@
-import { intersection } from 'polygon-clipping';
+import { difference, intersection } from 'polygon-clipping';
 import { openRing, pointInRings, signedArea } from './clip';
 import { ClipperLib } from './buffer';
 import { MeshBuilder, boxMesh, snap, solidWithFlatFloor, triangulate } from './geom';
 import { buildingsMesh, type Mesh } from './mesh';
-import { edgeDistance, orientedBox, roofedBuildingMesh, roofZ } from './roofs';
+import { edgeDistance, orientedBox, profileT, profileZ, rawRoofMesh, roofedBuildingMesh, roofZ } from './roofs';
 import type { Building, Raster, Ring, RoofFit, XY } from '../types';
 
 /**
@@ -23,6 +23,9 @@ export interface RoofPart {
   fit: RoofFit;
   /** Chimneys and parapets standing on this roof (own layer). */
   details: { name: string; mesh: Mesh }[];
+  /** The part's outline (open rings) and the ground under it: dormers are placed from these. */
+  region: Ring[];
+  ground: number;
 }
 
 /** Fitted roof height at a BNG point. */
@@ -31,7 +34,9 @@ export function roofHeightAt(f: RoofFit, e: number, n: number): number {
   const dx = e - f.centre[0], dy = n - f.centre[1];
   const u = dx * f.axis[0] + dy * f.axis[1], v = -dx * f.axis[1] + dy * f.axis[0];
   if (f.type === 'shed') { const [c, pa, pb] = f.plane!; return c + pa * u + pb * v; }
-  return roofZ(f.type, f.eaves, f.ridge, f.a, f.b, u, v);
+  if (f.type === 'mansard' && f.profile) return profileZ(f.profile, profileT(f, u, v));
+  if (f.type === 'surface') return f.eaves;
+  return roofZ(f.type as 'gable' | 'hip', f.eaves, f.ridge, f.a, f.b, u, v);
 }
 
 const CHIMNEY_MIN = 0.9, CHIMNEY_MAX = 4.5, CHIMNEY_MAX_CELLS = 9;
@@ -144,9 +149,25 @@ export interface PartOptions {
   maxRmse: number;
   /** Smallest part (m²). */
   minArea: number;
+  /** Detect mansard (profile) roofs: a steep lower slope under a shallow or flat top. */
+  mansards: boolean;
+  /** Keep roofs that no standard shape fits (churches, vaults, domes) as the smoothed LIDAR surface instead of a flat block. */
+  surfaceFallback: boolean;
+  /** Vegetation (0-1 greenness, from user imagery): LIDAR cells over trees are ignored when fitting roofs. */
+  vegetation?: Raster | null;
 }
 
-export const DEFAULT_PART_OPTIONS: PartOptions = { stepThreshold: 0.8, maxRmse: 1.0, minArea: 12 };
+export const DEFAULT_PART_OPTIONS: PartOptions = { stepThreshold: 0.8, maxRmse: 1.0, minArea: 12, mansards: true, surfaceFallback: true };
+
+/** OSM `roof:shape` -> the fitted type it asks for. */
+const ROOF_TAG: Record<string, RoofFit['type']> = {
+  gabled: 'gable', gable: 'gable', saltbox: 'shed', hipped: 'hip', 'half-hipped': 'hip', pyramidal: 'hip', hip: 'hip',
+  skillion: 'shed', 'lean_to': 'shed', flat: 'flat', mansard: 'mansard', gambrel: 'mansard',
+  dome: 'surface', round: 'surface', onion: 'surface', cone: 'hip', 'cross_gabled': 'surface', 'quadruple_saltbox': 'surface',
+};
+
+export const CHURCH = /^(church|cathedral|chapel|monastery|temple|mosque|synagogue|presbytery)$/;
+export const isChurch = (b: Pick<Building, 'tags'>) => CHURCH.test(b.tags.building ?? '') || b.tags.amenity === 'place_of_worship';
 
 type Poly = Ring[]; // polygon-clipping style: closed rings, outer first
 const closeRing = (r: Ring): Ring => { const o = openRing(r); return [...o, o[0]]; };
@@ -206,35 +227,41 @@ function decompose(region: Poly, minArea: number, depth = 0): Poly[] {
 
 interface Sample { u: number; v: number; z: number }
 
-function collect(region: Poly, dsm: Raster, box: ReturnType<typeof orientedBox>, inset: number): Sample[] {
+function collect(region: Poly, dsm: Raster, box: ReturnType<typeof orientedBox>, inset: number, veg?: Raster | null): Sample[] {
   const outer = region[0];
   let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
   for (const [e, n] of outer) { minE = Math.min(minE, e); maxE = Math.max(maxE, e); minN = Math.min(minN, n); maxN = Math.max(maxN, n); }
   const i0 = Math.max(0, Math.floor((minE - dsm.minE) / dsm.res)), i1 = Math.min(dsm.width - 1, Math.ceil((maxE - dsm.minE) / dsm.res));
   const j0 = Math.max(0, Math.floor((dsm.maxN - maxN) / dsm.res)), j1 = Math.min(dsm.height - 1, Math.ceil((dsm.maxN - minN) / dsm.res));
   const out: Sample[] = [];
+  let masked = 0;
   const [ux, uy] = box.axis;
   for (let j = j0; j <= j1; j++) {
     const n = dsm.maxN - (j + 0.5) * dsm.res;
     for (let i = i0; i <= i1; i++) {
       const e = dsm.minE + (i + 0.5) * dsm.res;
       if (!pointInRings(e, n, region) || edgeDistance(e, n, region) < inset) continue;
+      if (veg) {
+        const vi = Math.floor((e - veg.minE) / veg.res), vj = Math.floor((veg.maxN - n) / veg.res);
+        if (vi >= 0 && vj >= 0 && vi < veg.width && vj < veg.height && veg.data[vj * veg.width + vi] > 0.5) { masked++; continue; }
+      }
       const dx = e - box.centre[0], dy = n - box.centre[1];
       out.push({ u: dx * ux + dy * uy, v: -dx * uy + dy * ux, z: dsm.data[j * dsm.width + i] });
     }
   }
+  // A roof that is mostly "green" is a green roof or a bad mask: don't throw it away.
+  if (masked > out.length) return veg ? collect(region, dsm, box, inset, null) : out;
   return out;
 }
 
 const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
 
 /** Cut the footprint along its long axis at roofline steps. Returns the strips (or the whole footprint). */
-function terraceStrips(b: Building, dsm: Raster, opt: PartOptions): Poly[] {
-  const outer = b.rings;
+function terraceStrips(b: Building, dsm: Raster, opt: PartOptions, outer: Poly = b.rings): Poly[] {
   let box;
-  try { box = orientedBox(b.rings[0]); } catch { return [outer]; }
+  try { box = orientedBox(outer[0]); } catch { return [outer]; }
   if (box.a < 8) return [outer];
-  const samples = collect(outer, dsm, box, 0.75);
+  const samples = collect(outer, dsm, box, 0.75, opt.vegetation);
   const nb = Math.ceil(2 * box.a);
   if (nb < 6 || samples.length < 24) return [outer];
   const buckets: number[][] = Array.from({ length: nb }, () => []);
@@ -274,12 +301,68 @@ function fitPlane(s: Sample[]): [number, number, number] | null {
   return [sol[0], sol[1], sol[2]];
 }
 
+/** Context for one part: what the OSM tags ask for and what kind of building it is. */
+export interface FitContext {
+  /** Requested shape (from `roof:shape`), if any. */
+  want?: RoofFit['type'];
+  church?: boolean;
+}
+
+interface Cand { fit: RoofFit; rank: number; ok: boolean; type: RoofFit['type'] }
+
+/**
+ * Mansard / gambrel search: a steep lower slope (60-75 degrees) up to a break at distance `tb` from the wall, then a
+ * shallower slope (0 = flat top) to the top. Linear least squares for the break height and upper slope at each
+ * (tb, steep slope) on a coarse grid; the best wins.
+ */
+function fitMansard(pts: Sample[], la: number, hw: number, hipped: boolean, ground: number, box: ReturnType<typeof orientedBox>): RoofFit | null {
+  const n = pts.length;
+  if (n < 24 || hw < 2.5 || hw > 12 || (hipped && la < hw)) return null;
+  const t = pts.map((q) => (hipped ? Math.min(hw - Math.abs(q.v), la - Math.abs(q.u)) : hw - Math.abs(q.v)));
+  let best: { err: number; tb: number; s1: number; s2: number; zb: number } | null = null;
+  for (let tb = 0.8; tb <= Math.min(3.2, hw - 0.9); tb += 0.2) {
+    let low = 0;
+    for (const x of t) if (x < tb) low++;
+    if (low < 8) continue;
+    for (const s1 of [1.5, 2.0, 2.75, 3.7]) {
+      // y = z - lower-slope contribution; model y = zb + s2 * max(0, t - tb)
+      let sx = 0, sy = 0, sxx = 0, sxy = 0;
+      const ys: number[] = [], xs: number[] = [];
+      for (let k = 0; k < n; k++) {
+        const x = Math.max(0, t[k] - tb), y = pts[k].z - (t[k] < tb ? s1 * (t[k] - tb) : 0);
+        xs.push(x); ys.push(y);
+        sx += x; sy += y; sxx += x * x; sxy += x * y;
+      }
+      const den = n * sxx - sx * sx;
+      let s2 = den > 1e-9 ? (n * sxy - sx * sy) / den : 0;
+      s2 = Math.min(0.8, Math.max(0, s2));
+      if (s2 < 0.08) s2 = 0;
+      const zb = (sy - s2 * sx) / n;
+      let e2 = 0;
+      for (let k = 0; k < n; k++) e2 += (zb + s2 * xs[k] - ys[k]) ** 2;
+      const err = Math.sqrt(e2 / n);
+      const eaves = zb - s1 * tb, ridge = zb + s2 * (hw - tb);
+      if (s1 * tb < 1.5 || eaves < ground + 2 || ridge - eaves > 1.4 * hw + 1) continue;
+      if (!best || err < best.err) best = { err, tb, s1, s2, zb };
+    }
+  }
+  if (!best) return null;
+  // Outline misalignment lowers the edge cells on ONE side only; a real mansard drops away on both long sides.
+  // Compare each side's edge cells with where the upper slope would put them (extended down to the wall).
+  const ext = [0, 0], ec = [0, 0];
+  pts.forEach((q, k) => { if (t[k] < best!.tb) { const i = q.v > 0 ? 0 : 1; ext[i] += q.z - (best!.zb - best!.s2 * (best!.tb - t[k])); ec[i]++; } });
+  if (ec[0] < 4 || ec[1] < 4 || ext[0] / ec[0] > -0.5 || ext[1] / ec[1] > -0.5) return null;
+  const eaves = best.zb - best.s1 * best.tb, ridge = best.zb + best.s2 * (hw - best.tb);
+  const profile: [number, number][] = [[0, eaves], [best.tb, best.zb], [hw, ridge]];
+  return { type: 'mansard', eaves, ridge, ...box, a: la, b: hw, rmse: best.err, profile, hipped };
+}
+
 /** Choose the best standard shape for one part. */
-export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOptions): RoofFit | null {
+export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOptions, ctx: FitContext = {}): RoofFit | null {
   let box;
   try { box = orientedBox(region[0]); } catch { return null; }
   const { a, b } = box;
-  const samples = collect(region, dsm, box, 0.75);
+  const samples = collect(region, dsm, box, 0.75, opt.vegetation);
   const n = samples.length;
   if (n < 8) return null;
   const zs = samples.map((q) => q.z).sort((p, q) => p - q);
@@ -287,9 +370,13 @@ export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOpti
   const flatErr = Math.sqrt(zs.reduce((s, v) => s + (v - mean) ** 2, 0) / n);
   const top = zs[Math.round(0.7 * (n - 1))];
   const flat: RoofFit = { type: 'flat', eaves: top, ridge: top, ...box, rmse: flatErr };
-  if (zs[n - 1] - zs[0] < 1.0) return flat;
+  if (ctx.want === 'flat') return { ...flat, hint: 'roof:shape' };
+  const relief = zs[Math.round(0.95 * (n - 1))] - zs[Math.round(0.05 * (n - 1))];
+  // OSM can ask for a shape the LIDAR only weakly supports: relax the acceptance tests for that shape.
+  const lenient = (type: RoofFit['type']) => ctx.want === type;
+  const maxRmse = opt.maxRmse * (ctx.church ? 1.4 : 1);
+  if (zs[n - 1] - zs[0] < 1.0 && !ctx.want) return flat;
 
-  type Cand = { fit: RoofFit; rank: number };
   const cands: Cand[] = [];
   const rmse = (f: (q: Sample) => number) => Math.sqrt(samples.reduce((s, q) => s + (f(q) - q.z) ** 2, 0) / n);
 
@@ -311,10 +398,15 @@ export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOpti
       const k = den > 1e-9 ? (n * stz - st * sz) / den : 0;
       const eaves = (sz - k * st) / n, ridge = eaves + k * hw;
       const rise = ridge - eaves;
-      if (rise < 1.2 || rise > Math.min(0.9 * hw, 9) || eaves < ground + 2) return;
+      // A pyramid on a small square tower (a spire) may rise much more steeply than a house roof.
+      const spire = type === 'hip' && hw <= 5.5 && la <= 1.7 * hw;
+      const riseCap = spire ? Math.min(5 * hw, 35) : Math.min(0.9 * hw, 9);
+      const rises = rise >= 1.2 && rise <= riseCap && eaves >= ground + 2;
+      if (!rises && !(lenient(type) && rise >= 0.6 && rise <= riseCap * 1.3)) return;
       const slope = rise / hw;
       const err = Math.sqrt(pts.reduce((acc, q) => acc + (eaves + slope * Math.max(0, tOf(q)) - q.z) ** 2, 0) / n);
-      if (err <= opt.maxRmse && err < 0.75 * flatErr) cands.push({ fit: { type, eaves, ridge, ...fb, rmse: err }, rank });
+      const ok = err <= maxRmse && err < 0.75 * flatErr;
+      if (ok || (lenient(type) && err <= 1.6 * maxRmse)) cands.push({ fit: { type, eaves, ridge, ...fb, rmse: err }, rank, ok, type });
     });
   }
   // Shed: one tilted plane (a terrace on a slope, a lean-to, a mono-pitch).
@@ -324,18 +416,53 @@ export function fitPart(region: Poly, dsm: Raster, ground: number, opt: PartOpti
     const slope = Math.hypot(pa, pb);
     const deg = (Math.atan(slope) * 180) / Math.PI;
     const err = rmse((q) => c + pa * q.u + pb * q.v);
-    if (deg >= 4 && deg <= 40 && err <= opt.maxRmse && err < 0.6 * flatErr) {
+    const ok = deg >= 4 && deg <= 40 && err <= maxRmse && err < 0.6 * flatErr;
+    if (ok || (lenient('shed') && deg >= 2 && deg <= 50 && err <= 1.6 * maxRmse)) {
       // Eaves = low corner, ridge = high corner of the box.
       const lo = c - Math.abs(pa) * a - Math.abs(pb) * b, hi = c + Math.abs(pa) * a + Math.abs(pb) * b;
-      cands.push({ fit: { type: 'shed', eaves: lo, ridge: hi, ...box, rmse: err, plane }, rank: 2 });
+      cands.push({ fit: { type: 'shed', eaves: lo, ridge: hi, ...box, rmse: err, plane }, rank: 2, ok, type: 'shed' });
     }
   }
-  if (!cands.length) return flat;
-  // Lowest error wins; near-ties prefer the simpler shape (gable < hip < shed).
-  cands.sort((p, q) => p.fit.rmse - q.fit.rmse);
-  const best = cands[0];
-  const tied = cands.filter((c) => c.fit.rmse <= best.fit.rmse * 1.1).sort((p, q) => p.rank - q.rank)[0];
-  return tied.fit;
+  // Mansard: needs samples close to the wall, where the steep slope shows.
+  if (opt.mansards && (ctx.want === undefined || ctx.want === 'mansard')) {
+    const near = collect(region, dsm, box, 0.5, opt.vegetation);
+    // Judge the plain shapes on the same near-wall samples, where a steep lower slope would show.
+    const onNear = (f: RoofFit) => Math.sqrt(near.reduce((acc, q) => {
+      const e = box.centre[0] + q.u * box.axis[0] - q.v * box.axis[1], nn = box.centre[1] + q.u * box.axis[1] + q.v * box.axis[0];
+      return acc + (roofHeightAt(f, e, nn) - q.z) ** 2;
+    }, 0) / Math.max(1, near.length));
+    const nm = near.reduce((acc, q) => acc + q.z, 0) / Math.max(1, near.length);
+    const flatNear = Math.sqrt(near.reduce((acc, q) => acc + (q.z - nm) ** 2, 0) / Math.max(1, near.length));
+    const simple = Math.min(flatNear, ...cands.filter((c) => c.ok).map((c) => onNear(c.fit)));
+    for (const fb of frames.map((f) => f.box)) {
+      const pts = fb.axis === box.axis ? near : near.map((q) => ({ u: q.v, v: -q.u, z: q.z }));
+      for (const hipped of [false, true]) {
+        const m = fitMansard(pts, fb.a, fb.b, hipped, ground, fb);
+        if (!m) continue;
+        // Five parameters: only accept when clearly better than a plain pitched roof (or when OSM says mansard).
+        const ok = m.rmse <= maxRmse && m.rmse < 0.8 * simple && simple - m.rmse >= 0.25;
+        if (ok || (lenient('mansard') && m.rmse <= 1.6 * maxRmse)) cands.push({ fit: m, rank: 3, ok, type: 'mansard' });
+      }
+    }
+  }
+  const usable = ctx.want ? cands.filter((c) => c.type === ctx.want) : cands.filter((c) => c.ok);
+  if (!usable.length) {
+    if (ctx.want === 'surface' || (opt.surfaceFallback && n >= (ctx.church ? 40 : 70) && relief >= (ctx.church ? 2.5 : 4.5) && flatErr >= (ctx.church ? 1.0 : 1.7))) {
+      // Nothing standard fits (nave vault, dome, complex pitched cluster): keep the LIDAR surface rather than a flat top.
+      return { type: 'surface', eaves: zs[Math.round(0.05 * (n - 1))], ridge: zs[Math.round(0.95 * (n - 1))], ...box, rmse: flatErr, hint: ctx.want ? 'roof:shape' : undefined };
+    }
+    // The tag asked for something LIDAR does not support: fall back to whatever fits on its own merits.
+    if (ctx.want) return fitPart(region, dsm, ground, opt, { church: ctx.church });
+    return flat;
+  }
+  // Lowest error wins; near-ties prefer the simpler shape (gable < hip < shed < mansard).
+  // A mansard that beat the plain shapes on the near-wall samples wins outright (their errors are not comparable).
+  const man = usable.filter((c) => c.type === 'mansard').sort((p, q) => p.fit.rmse - q.fit.rmse)[0];
+  if (man) return ctx.want ? { ...man.fit, hint: 'roof:shape' } : man.fit;
+  usable.sort((p, q) => p.fit.rmse - q.fit.rmse);
+  const best = usable[0];
+  const tied = usable.filter((c) => c.fit.rmse <= best.fit.rmse * 1.1).sort((p, q) => p.rank - q.rank)[0];
+  return ctx.want ? { ...tied.fit, hint: 'roof:shape' } : tied.fit;
 }
 
 /** Closed solid for a mono-pitch roof over a part. */
@@ -371,16 +498,68 @@ function groundUnder(region: Poly, dtm: Raster): number {
   return Number.isFinite(lo) ? lo : dtm.data[Math.min(dtm.data.length - 1, Math.max(0, j0 * dtm.width + i0))];
 }
 
+/** 3x3 median of a DSM: removes single-cell spikes before a complex roof is meshed from it directly. */
+const smoothCache = new WeakMap<Raster, Raster>();
+function smoothedDsm(dsm: Raster): Raster {
+  let s = smoothCache.get(dsm);
+  if (s) return s;
+  const out = new Float32Array(dsm.data.length);
+  const w = dsm.width, h = dsm.height, win = new Array<number>(9);
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) {
+      let c = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const x = Math.min(w - 1, Math.max(0, i + di)), y = Math.min(h - 1, Math.max(0, j + dj));
+        win[c++] = dsm.data[y * w + x];
+      }
+      win.sort((p, q) => p - q);
+      out[j * w + i] = win[4];
+    }
+  }
+  s = { ...dsm, data: out };
+  smoothCache.set(dsm, s);
+  return s;
+}
+
+/** A region of a footprint together with what OSM says about it. */
+interface Region { poly: Poly; want?: RoofFit['type']; minHeight: number; tags: Record<string, string> }
+
+const wantOf = (tags: Record<string, string>): RoofFit['type'] | undefined => ROOF_TAG[(tags['roof:shape'] ?? '').toLowerCase()];
+
+/** Regions to fit: `building:part` volumes when OSM has them, otherwise the footprint split into terrace strips / rectangles. */
+function regionsOf(b: Building, dsm: Raster, opt: PartOptions): Region[] {
+  const foot: Poly = b.rings.map(closeRing);
+  const split = (poly: Poly, tags: Record<string, string>, strips: boolean): Region[] => {
+    const want = wantOf(tags);
+    const pieces = strips && !want ? terraceStrips(b, dsm, opt, poly) : [poly];
+    return pieces.flatMap((s) => decompose(s.map(closeRing), opt.minArea)).map((poly) => ({ poly, want, minHeight: parseFloat(tags.min_height ?? '') || 0, tags }));
+  };
+  if (!b.parts?.length) return split(foot, b.tags, true);
+  const out: Region[] = [];
+  let rest: Poly[] = [foot];
+  for (const part of b.parts) {
+    const mask = part.rings.map(closeRing);
+    for (const piece of clip(foot, mask[0]).filter((p) => areaOf(p) >= opt.minArea)) out.push(...split(piece, { ...b.tags, ...part.tags }, false));
+    // Whatever the part covers is removed from the remainder (min_height parts float over, they don't replace what is below).
+    if (!(parseFloat(part.tags.min_height ?? '') > 0.5)) {
+      rest = rest.flatMap((r) => { try { return difference(r, [mask[0]]).map((q) => q.map((ring) => ring as Ring)); } catch { return [r]; } }).filter((p) => areaOf(p) >= opt.minArea);
+    }
+  }
+  for (const r of rest) out.push(...split(r, b.tags, true));
+  return out;
+}
+
 /** Interpret one building's roof as a set of standard-shaped parts, or null if there is nothing to fit. */
 export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, opt: PartOptions = DEFAULT_PART_OPTIONS, withDetails = false): RoofPart[] | null {
   if (b.rings[0].length < 3) return null;
-  const regions = terraceStrips(b, dsm, opt).flatMap((strip) => decompose(strip.map(closeRing), opt.minArea));
+  const regions = regionsOf(b, dsm, opt);
+  const church = isChurch(b);
   const parts: RoofPart[] = [];
   const base = `building_${b.id.replace(/[^\w#-]/g, '_')}`;
   let k = 0;
-  for (const region of regions) {
-    const ground = groundUnder(region, dtm);
-    let fit = fitPart(region, dsm, ground, opt);
+  for (const { poly: region, want, minHeight } of regions) {
+    const ground = groundUnder(region, dtm) + minHeight;
+    let fit = fitPart(region, dsm, ground, opt, { want, church });
     if (!fit) {
       // Too few LIDAR samples (a tiny wing): keep it as a block at the building's height rather than leave a hole.
       let box;
@@ -391,8 +570,9 @@ export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, 
     const rings = region.map((r) => openRing(r));
     const pseudo: Building = { id: b.id, rings, tags: b.tags, ground, top: fit.ridge, source: b.source };
     let mesh: Mesh | null = null;
-    if (fit.type === 'gable' || fit.type === 'hip') mesh = roofedBuildingMesh(pseudo, fit, origin, floorZ);
+    if (fit.type === 'gable' || fit.type === 'hip' || fit.type === 'mansard') mesh = roofedBuildingMesh(pseudo, fit, origin, floorZ);
     else if (fit.type === 'shed') mesh = shedMesh(region, fit, origin, floorZ);
+    else if (fit.type === 'surface') mesh = rawRoofMesh(pseudo, smoothedDsm(dsm), origin, floorZ);
     if (!mesh) {
       // Flat (or a pitched fit that failed to build): a block at the fitted height.
       const top = Math.max(fit.type === 'flat' ? fit.eaves : fit.ridge, ground + 2.5);
@@ -403,13 +583,13 @@ export function fitRoofParts(b: Building, dsm: Raster, dtm: Raster, origin: XY, 
     k++;
     const partName = regions.length > 1 ? `${base}_${k}` : base;
     const details: RoofPart['details'] = [];
-    if (withDetails) {
+    if (withDetails && fit.type !== 'surface') {
       const id = partName.replace(/^building_/, '');
       details.push(...chimneys(region, fit, dsm, origin, id));
       const par = parapet(region, fit, dsm, origin, id);
       if (par) details.push(par);
     }
-    parts.push({ name: partName, mesh, fit, details });
+    parts.push({ name: partName, mesh, fit, details, region: rings, ground });
   }
   return parts.length ? parts : null;
 }

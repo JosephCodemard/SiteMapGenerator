@@ -683,7 +683,7 @@ describe('sheets and CAD standards', () => {
     expect(svg).toContain(`width="${layout.w}mm"`);
   });
   it('layer schemes rename, merge duplicates, add a prefix and snap lines to ISO 128 weights', () => {
-    expect(layerName('ROAD-SURFACE', 'ncs')).toBe('C-ROAD-KERB');
+    expect(layerName('ROAD-SURFACE', 'ncs')).toBe('C-ROAD-PVMT');
     expect(layerName('ROAD-SURFACE', 'simple', 'ab_')).toBe('AB_ROAD-SURFACE');
     expect(snapWeight(0.32)).toBe(0.35); expect(snapWeight(0.05)).toBe(0.13); expect(snapWeight(0.6)).toBe(0.5);
     const mk = (name: string): never => ({ name, label: '', stroke: '#000', aci: 7, weight: 0.3, items: [{ t: 'line', pts: [[0, 0], [1, 1]] }] }) as never;
