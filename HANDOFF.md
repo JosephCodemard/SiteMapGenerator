@@ -231,6 +231,14 @@ In headless Chromium, WebGL needs `--use-angle=swiftshader --enable-unsafe-swift
 
 ---
 
+## 7b. Iteration 3, milestone M1 (2026-11-04)
+
+The full plan is in `PLAN.md` (datasets audited live, milestones M1–M6). Done so far:
+- **Adaptive terrain** (`process/rtin.ts`): RTIN with a vertical tolerance and triangle cap; crack-free, one boundary loop, closes via `solidWithFlatFloor`. `Scene.terrainSolid(baseZ)` replaces direct `terrainMesh` calls in exports.
+- **LOD2-fit roofs** (`process/roofparts.ts`): terrace strips, rectangle decomposition, flat/shed/gable/hip per part, either ridge orientation. Roof lines in drawings use `Building.roofParts`.
+- Known: 1 of 557 Pulteney parts has an open edge (pinch); chimneys/parapets not yet.
+- Added to the plan on request: custom site shapes (M2) and side-elevation slices from a drawn cut line (M4).
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.

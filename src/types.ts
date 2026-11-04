@@ -45,7 +45,7 @@ export type HeightSource = 'lidar' | 'osm-height' | 'osm-levels' | 'default';
 
 /** Fitted roof shape for LOD1.5: a flat block, or a gable / hip over the footprint's oriented box. */
 export interface RoofFit {
-  type: 'flat' | 'gable' | 'hip';
+  type: 'flat' | 'shed' | 'gable' | 'hip';
   /** Eaves and ridge, m ODN. */
   eaves: number;
   ridge: number;
@@ -56,6 +56,8 @@ export interface RoofFit {
   b: number;
   /** RMS error of the chosen shape against the DSM (m). */
   rmse: number;
+  /** Shed roofs: plane z = c + a*u + b*v in box coordinates (u along `axis`, v across). */
+  plane?: [number, number, number];
 }
 
 export interface Building {
@@ -69,6 +71,8 @@ export interface Building {
   source: HeightSource;
   /** Fitted roof shape, set when the model is built at LOD1.5. */
   roof?: RoofFit;
+  /** LOD2-fit: one fitted roof per part (house in a terrace, wing of an L-shape). */
+  roofParts?: RoofFit[];
 }
 
 /** The fetched, aligned dataset (everything in BNG / ODN heights). */

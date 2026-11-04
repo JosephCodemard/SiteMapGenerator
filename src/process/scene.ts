@@ -2,7 +2,9 @@ import { bufferLines, unionPolygons, type Polygon } from './buffer';
 import { buildContext, type Context } from './context';
 import { drapeSurface, mergeMeshes, rasterizePolygons, solidWithMirrorFloor, triCount } from './geom';
 import { buildingsMesh, stepForTriangles, terrainGrid, terrainMesh, type Mesh, type TerrainGrid } from './mesh';
+import { adaptiveTerrain } from './rtin';
 import { polylineLength, resample, ribbonSolid } from './ribbon';
+import { fitRoofParts } from './roofparts';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh, roofRaster } from './roofs';
 import { detectTrees, treesMesh, type Tree } from './trees';
 import type { Building, Raster, SiteData } from '../types';
@@ -47,13 +49,15 @@ export interface SceneObject {
 
 // ------------------------------------------------------------------ settings
 
-export type BuildingLod = 'off' | 'lod1' | 'lod15' | 'lod2';
+export type BuildingLod = 'off' | 'lod1' | 'lod15' | 'lod2fit' | 'lod2';
 
 export interface ModelSettings {
   /** Model scale denominator (1000 = 1:1000); converts print-scale millimetres to metres. */
   scaleDen: number;
-  /** Terrain grid step in metres; 0 = pick the finest step within `maxTris`. */
+  /** Terrain grid step in metres; 0 = pick the finest step within `maxTris`; -1 = adaptive (RTIN). */
   terrainStep: number;
+  /** Adaptive terrain: largest vertical deviation from the DTM (m). */
+  terrainTolerance: number;
   /** Triangle budget for the terrain when `terrainStep` is 0. */
   maxTris: number;
   buildings: BuildingLod;
@@ -78,7 +82,7 @@ export interface ModelSettings {
 }
 
 export const DEFAULT_SETTINGS: ModelSettings = {
-  scaleDen: 1000, terrainStep: 0, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
+  scaleDen: 1000, terrainStep: 0, terrainTolerance: 0.1, maxTris: 500_000, buildings: 'lod1', roofStep: 1,
   roads: true, paths: true, rail: true, water: true, green: true, bridges: true, walls: true, trees: 'lidar',
   reliefMm: 0.4, waterDepthMm: 1, featureStep: 0, featureSolids: true,
 };
@@ -93,6 +97,10 @@ export interface Scene {
   /** The (possibly carved) DTM the terrain was built from. */
   terrainRaster: Raster;
   step: number;
+  /** Closed terrain solid with a flat base at `baseZ` (same surface as the preview). */
+  terrainSolid(baseZ: number): Mesh;
+  /** Adaptive terrain only: the vertical tolerance actually used (m). */
+  tolerance?: number;
   /** Triangles per layer. */
   stats: Record<string, number>;
   notes: string[];
@@ -140,7 +148,8 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
 
   // ---- terrain (optionally with the rivers carved in)
   await progress('Terrain…');
-  const step = s.terrainStep || stepForTriangles(site.dtm, s.maxTris);
+  const adaptive = s.terrainStep < 0;
+  const step = adaptive ? 1 : s.terrainStep || stepForTriangles(site.dtm, s.maxTris);
   const depth = s.water && ctx.water.length && s.waterDepthMm > 0 ? mmToM(s.waterDepthMm, s.scaleDen) : 0;
   let raster = site.dtm;
   if (depth) {
@@ -148,9 +157,21 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
     const mask = rasterizePolygons(ctx.water, site.dtm);
     for (let k = 0; k < mask.length; k++) if (mask[k]) raster.data[k] -= depth;
   }
-  const grid = terrainGrid(raster, origin, { step });
-  const original = depth ? terrainGrid(site.dtm, origin, { step }) : grid;
-  add('terrain', terrainMesh(raster, origin, { step }, grid));
+  // Draped features always follow the full-resolution surface; the preview/export mesh may be simplified.
+  const grid = terrainGrid(raster, origin, { step: adaptive ? 1 : step });
+  const original = depth ? terrainGrid(site.dtm, origin, { step: adaptive ? 1 : step }) : grid;
+  let terrainSolid: (baseZ: number) => Mesh;
+  let tolerance: number | undefined;
+  if (adaptive) {
+    const at = adaptiveTerrain(raster, origin, { tolerance: s.terrainTolerance, maxTris: s.maxTris });
+    tolerance = at.tolerance;
+    add('terrain', at.mesh);
+    terrainSolid = at.solid;
+    if (at.tolerance > s.terrainTolerance * 1.01) notes.push(`Adaptive terrain: tolerance raised to ${at.tolerance.toFixed(2)} m to stay within ${s.maxTris.toLocaleString()} triangles.`);
+  } else {
+    add('terrain', terrainMesh(raster, origin, { step }, grid));
+    terrainSolid = (baseZ) => terrainMesh(raster, origin, { step, baseZ }, grid);
+  }
 
   // ---- buildings
   if (s.buildings !== 'off' && site.buildings.length) {
@@ -159,9 +180,10 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
   }
 
   // ---- draped context features
-  const relief = mmToM(s.reliefMm, s.scaleDen);
-  const fstep = s.featureStep || Math.max(2, step);
-  const lines = (k: number) => grid.lines(Math.max(1, Math.round((fstep * k) / step)));
+  // Features must clear the simplified terrain: raise their relief above the adaptive tolerance.
+  const relief = Math.max(mmToM(s.reliefMm, s.scaleDen), tolerance ? 1.5 * tolerance : 0);
+  const fstep = s.featureStep || Math.max(2, adaptive ? 2 : step);
+  const lines = (k: number) => grid.lines(Math.max(1, Math.round((fstep * k) / (adaptive ? 1 : step))));
   const pads = (name: string, polys: { name: string; rings: Polygon }[], k: number, lift: number): Mesh => {
     const g = lines(k);
     return mergeMeshes(polys.map(({ name: n, rings }) => {
@@ -256,7 +278,7 @@ export async function buildScene(site: SiteData, s: ModelSettings, progress: Pro
 
   const stats: Record<string, number> = {};
   for (const o of objects) stats[o.layer] = triCount(o.mesh);
-  return { objects, grid, terrainRaster: raster, step, stats, notes, trees };
+  return { objects, grid, terrainRaster: raster, step, terrainSolid, tolerance, stats, notes, trees };
 }
 
 /** All buildings at the chosen LOD, one named part each. */
@@ -267,10 +289,19 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): Mesh
   const dsm = site.dsm;
   const floor = (b: Building) => b.ground - 0.5;
   let pitched = 0, raw = 0;
+  const partTypes = { flat: 0, shed: 0, gable: 0, hip: 0 };
   const raster = dsm && s.buildings === 'lod2' ? roofRaster(dsm, s.roofStep) : null;
   for (const b of site.buildings) {
     b.roof = undefined;
-    if (s.buildings === 'lod15' && dsm) {
+    b.roofParts = undefined;
+    if (s.buildings === 'lod2fit' && dsm) {
+      const ps = fitRoofParts(b, dsm, site.dtm, origin);
+      if (ps) {
+        b.roofParts = ps.map((p) => p.fit);
+        for (const p of ps) { parts.push({ name: p.name, mesh: p.mesh }); partTypes[p.fit.type]++; }
+        continue;
+      }
+    } else if (s.buildings === 'lod15' && dsm) {
       const fit = fitRoof(b, dsm);
       if (fit) {
         b.roof = fit;
@@ -284,6 +315,10 @@ function buildBuildings(site: SiteData, s: ModelSettings, notes: string[]): Mesh
     blocks.push(b);
   }
   if (s.buildings === 'lod15') notes.push(dsm ? `LOD1.5: ${pitched} pitched roofs fitted, ${blocks.length} flat.` : 'LOD1.5 needs the LIDAR DSM; showing flat blocks.');
+  if (s.buildings === 'lod2fit') {
+    const n = partTypes.flat + partTypes.shed + partTypes.gable + partTypes.hip;
+    notes.push(dsm ? `LOD2-fit: ${n} roof parts (${partTypes.gable} gable, ${partTypes.hip} hip, ${partTypes.shed} shed, ${partTypes.flat} flat) on ${site.buildings.length - blocks.length} buildings.` : 'LOD2-fit needs the LIDAR DSM; showing flat blocks.');
+  }
   if (s.buildings === 'lod2') notes.push(raster ? `LOD2-raw: ${raw} LIDAR roofs, ${blocks.length} blocks.` : 'LOD2 needs the LIDAR DSM; showing flat blocks.');
   const flat = buildingsMesh(blocks, origin);
   return mergeMeshes([...parts, { name: 'blocks', mesh: flat }]);

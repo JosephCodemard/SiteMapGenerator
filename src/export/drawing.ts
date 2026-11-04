@@ -150,10 +150,13 @@ export function buildDrawing(site: SiteData, contours: ContourLine[], opts: Draw
   if (f.buildings) {
     for (const b of site.buildings) {
       add('BUILDINGS', { t: 'poly', rings: b.rings, z: b.ground, thickness: b.top - b.ground });
-      if (f.roofs && b.roof && b.roof.type !== 'flat') {
-        const rl = roofLines(b.roof);
-        if (rl.ridge) add('ROOF', { t: 'line', pts: rl.ridge, z: rl.z });
-        for (const h of rl.hips) add('ROOF', { t: 'line', pts: h, z: rl.z });
+      if (f.roofs) {
+        for (const fit of b.roofParts ?? (b.roof ? [b.roof] : [])) {
+          if (fit.type === 'flat') continue;
+          const rl = roofLines(fit);
+          if (rl.ridge) add('ROOF', { t: 'line', pts: rl.ridge, z: rl.z });
+          for (const h of rl.hips) add('ROOF', { t: 'line', pts: h, z: rl.z });
+        }
       }
       if (opts.buildingLabels) {
         const [e, n] = centroid(b.rings[0]);

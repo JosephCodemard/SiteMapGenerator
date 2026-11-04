@@ -36,6 +36,7 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
    - Ground = lowest DTM value under the footprint. Top = a chosen DSM percentile inside it (typical roof 70th, eaves 40th, ridge 95th). Fallbacks: OSM `height`, then `building:levels`, then 7 m.
    - **LOD1** is a closed block sunk 0.5 m into the terrain.
    - **LOD1.5** fits a flat, gable or hip roof to the footprint's oriented box by least squares against the DSM, and keeps it only if the RMS error is ≤ 1.2 m and the pitch is plausible. Stepped terraces on a hillside, and complex roofs, stay as blocks.
+   - **LOD2-fit** splits the footprint into parts (one per house in a terrace, found from roofline steps along the long axis; L/T/U shapes bisected into rectangles) and fits flat, shed, gable or hip roofs to each by least squares against the DSM, ignoring edge samples. Each part is its own closed solid (`building_<id>_<n>`), so walls and floor join the roof and ground by construction.
    - **LOD2-raw** cuts the DSM grid to the footprint exactly (the roof edge follows the outline) with walls from the DSM. It looks like the real roofs but is noisy and not guaranteed watertight, so use it for visualisation.
 6. **Context features** (`src/process/context.ts`, `buffer.ts`, `scene.ts`):
    - Roads, paths and rail are offset from their centrelines (Clipper): `width` tag, then `lanes` × 3.25 m, then a class default; merged per class so junctions become single outlines (these give the drawing kerb lines).
@@ -43,7 +44,7 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
    - Roads, paths, rail, water and parks are draped on the terrain by cutting their triangles along the terrain grid, then closed into thin solids (`relief` mm at print scale) or left as lighter open surfaces.
    - Bridge decks follow the lowest DSM across the deck, smoothed and kept within a gentle arch over the abutments. Walls and fences are thin solids. Tunnels are left out of 3D (dashed in drawings).
    - Trees are local maxima of the canopy height model (DSM − DTM, minus buildings and bridges), with OSM tree points taking priority.
-7. **Terrain mesh:** a regular grid, averaged (not just point-sampled) when coarsened. The step is either set by you or the finest one within a triangle budget. It can be closed with walls and a base for a watertight solid.
+7. **Terrain mesh:** either a regular grid, averaged (not just point-sampled) when coarsened, or **adaptive** (right-triangle bintree): the DTM is resampled onto a 2ᵏ+1 grid spanning the site and triangles split only where the vertical error exceeds your tolerance (±5 cm to ±1 m), with a triangle cap that raises the tolerance if needed. Pulteney: 318 k triangles on the 1 m grid → 54 k at ±10 cm. Draped features follow the full-resolution surface and are raised above the tolerance. The step is either set by you or the finest one within a triangle budget. It can be closed with walls and a base for a watertight solid.
 8. **Contours:** marching squares on a smoothed grid of about 1.5 M cells, joined into polylines and simplified (Douglas–Peucker). Laser stacks use d3-contour's filled regions.
 
 ## Export conventions

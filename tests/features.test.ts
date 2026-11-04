@@ -4,6 +4,8 @@ import { buildContext } from '../src/process/context';
 import { boundaryLoops, drapeSurface, mergeMeshes, rasterizePolygons, solidWithFlatFloor, solidWithMirrorFloor } from '../src/process/geom';
 import { stepForTriangles, terrainGrid, terrainMesh, terrainTriangles, type Mesh } from '../src/process/mesh';
 import { polylineLength, resample, ribbonSolid } from '../src/process/ribbon';
+import { adaptiveTerrain, rtinGridSize } from '../src/process/rtin';
+import { fitRoofParts } from '../src/process/roofparts';
 import { fitRoof, rawRoofMesh, roofedBuildingMesh } from '../src/process/roofs';
 import { buildScene, DEFAULT_SETTINGS } from '../src/process/scene';
 import { detectTrees, treesMesh } from '../src/process/trees';
@@ -85,6 +87,69 @@ describe('terrain grid', () => {
     const pt = terrainGrid(noisy, [1000, 2000], { step: 4, average: false });
     const spread = (g: { z: Float32Array }) => Math.max(...g.z) - Math.min(...g.z);
     expect(spread(avg)).toBeLessThan(spread(pt));
+  });
+});
+
+describe('adaptive terrain (RTIN)', () => {
+  const origin: [number, number] = [1000, 2000];
+  const hill = raster(200, 160, (x, y) => 20 + 6 * Math.sin(x / 25) + 4 * Math.cos(y / 20));
+  /** Height of the (open) surface at a local point, by locating the containing triangle. */
+  const heightAt = (m: Mesh, x: number, y: number) => {
+    const P = m.positions;
+    for (let t = 0; t < m.indices.length; t += 3) {
+      const [a, b, c] = [m.indices[t] * 3, m.indices[t + 1] * 3, m.indices[t + 2] * 3];
+      const d = (P[b] - P[a]) * (P[c + 1] - P[a + 1]) - (P[c] - P[a]) * (P[b + 1] - P[a + 1]);
+      const l1 = ((x - P[a]) * (P[c + 1] - P[a + 1]) - (P[c] - P[a]) * (y - P[a + 1])) / d;
+      const l2 = ((P[b] - P[a]) * (y - P[a + 1]) - (x - P[a]) * (P[b + 1] - P[a + 1])) / d;
+      if (l1 >= -1e-6 && l2 >= -1e-6 && l1 + l2 <= 1 + 1e-6) return P[a + 2] + l1 * (P[b + 2] - P[a + 2]) + l2 * (P[c + 2] - P[a + 2]);
+    }
+    return NaN;
+  };
+  it('picks a power-of-two-plus-one grid', () => {
+    expect(rtinGridSize(200)).toBe(257);
+    expect(rtinGridSize(257)).toBe(257);
+    expect(rtinGridSize(258)).toBe(513);
+  });
+  it('collapses a flat surface to a handful of triangles', () => {
+    const flat = raster(300, 300, () => 25);
+    const at = adaptiveTerrain(flat, origin, { tolerance: 0.1 });
+    expect(at.triangles).toBeLessThanOrEqual(8);
+    expect(isWatertight(at.solid(10))).toBe(true);
+  });
+  it('stays within the vertical tolerance and refines where the ground is rough', () => {
+    for (const tolerance of [0.05, 0.25, 1]) {
+      const at = adaptiveTerrain(hill, origin, { tolerance });
+      const g = terrainGrid(hill, origin, { step: 1 });
+      let worst = 0;
+      for (let k = 0; k < 400; k++) {
+        const x = g.xs[0] + ((k * 7919) % 1000) / 1000 * (g.xs[g.nc - 1] - g.xs[0]);
+        const y = g.ys[g.nr - 1] + ((k * 104729) % 1000) / 1000 * (g.ys[0] - g.ys[g.nr - 1]);
+        worst = Math.max(worst, Math.abs(heightAt(at.mesh, x, y) - g.zAt(x, y)));
+      }
+      // The resample (257 vs 200 cells) adds a little; allow tolerance plus the grid's own interpolation error.
+      expect(worst).toBeLessThan(tolerance + 0.25);
+      expect(at.triangles).toBeLessThan(terrainTriangles(hill, 1));
+    }
+    const fine = adaptiveTerrain(hill, origin, { tolerance: 0.05 }).triangles;
+    const coarse = adaptiveTerrain(hill, origin, { tolerance: 1 }).triangles;
+    expect(coarse).toBeLessThan(fine / 3);
+  });
+  it('is crack-free (one boundary loop), closes into a watertight solid, and covers the same extent as the grid', () => {
+    const at = adaptiveTerrain(hill, origin, { tolerance: 0.2 });
+    expect(boundaryLoops(at.mesh.indices)).toHaveLength(1);
+    const solid = at.solid(0);
+    expect(isWatertight(solid)).toBe(true);
+    expect(volume(solid)).toBeGreaterThan(0);
+    const g = terrainGrid(hill, origin, { step: 1 });
+    const xs = Array.from({ length: at.mesh.positions.length / 3 }, (_, i) => at.mesh.positions[i * 3]);
+    expect(Math.min(...xs)).toBeCloseTo(g.xs[0], 3);
+    expect(Math.max(...xs)).toBeCloseTo(g.xs[g.nc - 1], 3);
+    expect(solid.uvs!.length / 2).toBe(solid.positions.length / 3);
+  });
+  it('honours a triangle cap by raising the tolerance', () => {
+    const at = adaptiveTerrain(hill, origin, { tolerance: 0.01, maxTris: 1500 });
+    expect(at.triangles).toBeLessThanOrEqual(1500);
+    expect(at.tolerance).toBeGreaterThan(0.01);
   });
 });
 
@@ -248,6 +313,80 @@ describe('roofs', () => {
   });
 });
 
+describe('LOD2-fit roofs', () => {
+  const origin: [number, number] = [1000, 2000];
+  const flatDtm = raster(80, 60, () => 0);
+  const partsVolume = (parts: { mesh: Mesh }[]) => parts.reduce((s, p) => s + volume(p.mesh), 0);
+
+  it('splits a stepped terrace into one gable per house with the right eaves', () => {
+    // 5 houses, 6 m wide (along x), 10 m deep, ridge along x; eaves 8, 9.5, 11, 12.5, 14 (stepping up the hill).
+    const house = (x: number) => Math.min(4, Math.max(0, Math.floor((x - 10) / 6)));
+    const dsm = raster(80, 60, (x, y) => {
+      if (x < 10 || x > 40 || y < 10 || y > 20) return 0;
+      const eaves = 8 + 1.5 * house(x), t = 1 - Math.abs(y - 15) / 5;
+      return eaves + 3 * t;
+    });
+    const b = building('terrace', [sq(1010, 2010, 1040, 2020)], 0, 12);
+    const parts = fitRoofParts(b, dsm, flatDtm, origin)!;
+    expect(parts).toHaveLength(5);
+    expect(parts.map((p) => p.fit.type)).toEqual(Array(5).fill('gable'));
+    const eaves = parts.map((p) => p.fit.eaves).sort((p, q) => p - q);
+    eaves.forEach((e, i) => expect(e).toBeGreaterThan(8 + 1.5 * i - 0.6));
+    eaves.forEach((e, i) => expect(e).toBeLessThan(8 + 1.5 * i + 0.6));
+    for (const p of parts) expect(isWatertight(p.mesh), p.name).toBe(true);
+    expect(new Set(parts.map((p) => p.name)).size).toBe(5);
+    // Total volume ~ sum of house prisms (6 x 10 x (eaves + 0.5 + 1.5 rise-avg)).
+    const expected = [0, 1, 2, 3, 4].reduce((s2, i) => s2 + 6 * 10 * (8 + 1.5 * i + 0.5 + 1.5), 0);
+    expect(Math.abs(partsVolume(parts) - expected) / expected).toBeLessThan(0.06);
+  });
+
+  it('fits a mono-pitch (shed) roof on a slope', () => {
+    const dsm = raster(80, 60, (x, y) => (x >= 10 && x <= 30 && y >= 10 && y <= 20 ? 6 + 0.25 * (x - 10) : 0));
+    const b = building('shed', [sq(1010, 2010, 1030, 2020)], 0, 9);
+    const parts = fitRoofParts(b, dsm, flatDtm, origin)!;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].fit.type).toBe('shed');
+    expect(parts[0].fit.rmse).toBeLessThan(0.2);
+    expect(isWatertight(parts[0].mesh)).toBe(true);
+    expect(volume(parts[0].mesh)).toBeCloseTo(20 * 10 * (6 + 2.5 + 0.5), -1);
+  });
+
+  it('decomposes an L-shaped building into rectangular parts, all closed', () => {
+    const L: [number, number][] = [[1010, 2010], [1040, 2010], [1040, 2020], [1020, 2020], [1020, 2035], [1010, 2035]];
+    const pointInL = (x: number, y: number) => (x >= 10 && x <= 40 && y >= 10 && y <= 20) || (x >= 10 && x <= 20 && y >= 20 && y <= 35);
+    const dsm = raster(80, 60, (x, y) => (pointInL(x, y) ? 9 : 0));
+    const b = building('L', [L], 0, 9);
+    const parts = fitRoofParts(b, dsm, flatDtm, origin)!;
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const p of parts) expect(isWatertight(p.mesh), p.name).toBe(true);
+    const area = 30 * 10 + 10 * 15;
+    expect(Math.abs(partsVolume(parts) - area * 9.5)).toBeLessThan(area * 9.5 * 0.04);
+  });
+
+  it('keeps a plain flat roof as a single flat part', () => {
+    const dsm = roofDsm(20, 10, () => 8);
+    const parts = fitRoofParts(building('f', [sq(1010, 2010, 1030, 2020)], 0, 8), dsm, flatDtm, origin)!;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].fit.type).toBe('flat');
+    expect(isWatertight(parts[0].mesh)).toBe(true);
+  });
+
+  it('works through the scene and feeds roof lines to the drawing', async () => {
+    const dsm = raster(120, 100, (x, y) => (x > 40 && x < 60 && y > 40 && y < 50 ? 7 + 3 * (1 - Math.abs(y - 45) / 5) : 0));
+    const dtm = raster(120, 100, () => 0);
+    const bld = building('1', [sq(1040, 2040, 1060, 2050)], 0, 9);
+    const site: SiteData = {
+      bbox: { minE: 1000, minN: 2000, maxE: 1120, maxN: 2100 }, origin: [1060, 2050], dtm, dsm,
+      buildings: [bld], lines: [], areas: [], trees: [], osmOffset: [0, 0], fetchedAt: '', filledCells: 0,
+    };
+    const sc = await buildScene(site, { ...DEFAULT_SETTINGS, buildings: 'lod2fit', trees: 'off' });
+    expect(sc.notes.join(' ')).toMatch(/LOD2-fit: 1 roof parts \(1 gable/);
+    expect(site.buildings[0].roofParts).toHaveLength(1);
+    const names = buildDrawing(site, [], { layers: defaultLayerToggles(), buildingLabels: false, features: ALL_FEATURES }).map((l) => l.name);
+    expect(names).toContain('ROOF');
+  });
+});
+
 describe('trees', () => {
   const dtm = raster(80, 80, () => 0);
   // Two crowns (10 m @ (20,20), 15 m @ (50,50)), a building-height block (12 m) and a flat ground.
@@ -330,6 +469,19 @@ describe('scene', () => {
     const carved = await buildScene(site, { ...DEFAULT_SETTINGS, waterDepthMm: 3 });
     const at = (s: typeof flat) => s.grid.zAt(1040 - 1060, 2082 - 2050);
     expect(at(flat) - at(carved)).toBeCloseTo(3, 1);
+  });
+  it('adaptive terrain in a scene: fewer triangles, features still sit above it, solid export works', async () => {
+    const grid = await buildScene(site, { ...DEFAULT_SETTINGS, maxTris: 100_000 });
+    const ad = await buildScene(site, { ...DEFAULT_SETTINGS, terrainStep: -1, terrainTolerance: 0.25, maxTris: 100_000 });
+    expect(ad.tolerance).toBeGreaterThanOrEqual(0.25);
+    expect(ad.stats.terrain).toBeLessThan(grid.stats.terrain);
+    expect(isWatertight(ad.terrainSolid(0))).toBe(true);
+    expect(isWatertight(grid.terrainSolid(0))).toBe(true);
+    // Roads are raised at least 1.5 x tolerance above the full-resolution surface.
+    const road = ad.objects.find((o) => o.layer === 'roads')!.mesh;
+    let min = Infinity;
+    for (let k = 0; k < road.positions.length; k += 3) min = Math.min(min, road.positions[k + 2] - ad.grid.zAt(road.positions[k], road.positions[k + 1]));
+    expect(min).toBeGreaterThan(-0.2); // the pad's embedded underside is within its own thickness
   });
   it('terrain triangle budget and step override are honoured', async () => {
     const budget = await buildScene(site, { ...DEFAULT_SETTINGS, maxTris: 2000 });

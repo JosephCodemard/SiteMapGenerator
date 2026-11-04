@@ -4,7 +4,7 @@ import { fetchSite, MAX_AREA_KM2, rasterToAsc, siteToGeoJson, type SiteInputs } 
 import { parseGridRef, toBNG, toWGS } from './geo/bng';
 import { buildingHeights, DEFAULT_HEIGHTS, type HeightOptions } from './process/buildings';
 import { contourBands, contourLevels, contourLines, type ContourLine } from './process/contours';
-import { stepForTriangles, terrainMesh, terrainTriangles, type Mesh } from './process/mesh';
+import { stepForTriangles, terrainTriangles, type Mesh } from './process/mesh';
 import { blur, downsample, hillshade, minMax } from './process/raster';
 import {
   DEFAULT_SETTINGS, MODEL_LAYERS, buildScene, layerDef, treesFor, type ModelSettings, type Scene,
@@ -192,6 +192,7 @@ function readSettings(): ModelSettings {
   return {
     scaleDen: num('stlScale'),
     terrainStep: num('terrainStep'),
+    terrainTolerance: num('terrainTol'),
     maxTris: num('maxTris'),
     buildings: checked('fBuildings') ? (sel('lod') as ModelSettings['buildings']) : 'off',
     roofStep: num('roofStep'),
@@ -214,7 +215,7 @@ function drawingFeatures(): DrawingFeatures {
   const s = readSettings();
   return {
     buildings: s.buildings !== 'off', roads: s.roads, paths: s.paths, rail: s.rail, water: s.water, green: s.green,
-    bridges: s.bridges, walls: s.walls, roofs: s.buildings === 'lod15',
+    bridges: s.bridges, walls: s.walls, roofs: s.buildings === 'lod15' || s.buildings === 'lod2fit',
     trees: site ? treesFor(site, s.trees) : [],
   };
 }
@@ -300,8 +301,9 @@ function updateMeshSummary() {
   if (!site) { $('meshSummary').textContent = ''; $('terrainInfo').textContent = 'set mesh size below'; return; }
   const s = readSettings();
   const step = s.terrainStep || stepForTriangles(site.dtm, s.maxTris);
-  const tris = terrainTriangles(site.dtm, step);
-  const t = `${step} m grid · ${(tris / 1e6).toFixed(2)} M triangles`;
+  const t = s.terrainStep < 0
+    ? `adaptive, ≤ ${s.terrainTolerance} m error · ≤ ${(s.maxTris / 1e6).toFixed(2)} M triangles`
+    : `${step} m grid · ${(terrainTriangles(site.dtm, step) / 1e6).toFixed(2)} M triangles`;
   $('terrainInfo').textContent = t;
   $('meshSummary').textContent = t;
 }
@@ -345,7 +347,7 @@ async function rebuildModel() {
     viewer.setExaggeration(num('exag'));
     showLegend();
     const tris = Object.values(scene.stats).reduce((a, b) => a + b, 0);
-    log(`Model: ${scene.step} m terrain grid, ${(tris / 1e6).toFixed(2)} M triangles in ${Object.keys(scene.stats).length} layers, ${s.buildings.length} buildings`);
+    log(`Model: ${scene.tolerance !== undefined ? `adaptive terrain (±${scene.tolerance.toFixed(2)} m)` : `${scene.step} m terrain grid`}, ${(tris / 1e6).toFixed(2)} M triangles in ${Object.keys(scene.stats).length} layers, ${s.buildings.length} buildings`);
     contourCache = null;
     showSummary();
     updateStlInfo();
@@ -396,7 +398,7 @@ async function exportObj() {
     const s = site!;
     const [lo] = minMax(s.dtm.data);
     const objects = sc.objects.map((o) => (o.layer === 'terrain' && checked('objSolid')
-      ? { ...o, mesh: terrainMesh(sc.terrainRaster, s.origin, { step: sc.step, baseZ: lo - 5 }, sc.grid) }
+      ? { ...o, mesh: sc.terrainSolid(lo - 5) }
       : o));
     const up = sel('objUp') as 'z' | 'y';
     const structure = sel('structure') as 'layers' | 'combined';
@@ -420,10 +422,9 @@ async function exportStl() {
   await busy('Exporting STL', async () => {
     const sc = await ensureModel();
     if (!sc) return;
-    const s = site!;
     const { k, exag, baseZ, unit } = stlParams();
     const t = { scale: k, zExaggeration: exag, zOffset: baseZ };
-    const named: [string, Mesh][] = [['TERRAIN', terrainMesh(sc.terrainRaster, s.origin, { step: sc.step, baseZ }, sc.grid)]];
+    const named: [string, Mesh][] = [['TERRAIN', sc.terrainSolid(baseZ)]];
     for (const o of sc.objects) if (o.layer !== 'terrain') named.push([layerDef(o.layer).cad, o.mesh]);
     const scaleName = `1-${num('stlScale')}_${unit}`;
     if (checked('stlMerge')) {
@@ -492,7 +493,7 @@ function drawingSvg(): string {
 /** Drawings show building roof lines only after a model with fitted roofs has been built. */
 async function prepareDrawing() {
   if (!site) return false;
-  if (readSettings().buildings === 'lod15' && (!scene || modelStale)) await ensureModel();
+  if (/^lod(15|2fit)$/.test(readSettings().buildings) && (!scene || modelStale)) await ensureModel();
   return true;
 }
 

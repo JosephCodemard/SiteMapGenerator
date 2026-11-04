@@ -81,6 +81,7 @@
               <select id="lod" data-persist>
                 <option value="lod1">Blocks (LOD1)</option>
                 <option value="lod15">Pitched roofs (LOD1.5)</option>
+                <option value="lod2fit">Interpreted roofs per house (LOD2-fit)</option>
                 <option value="lod2">LIDAR roofs (LOD2-raw)</option>
               </select>
             </td>
@@ -110,12 +111,19 @@
           <div class="grid2">
             <label>Terrain resolution
               <select id="terrainStep" data-persist>
+                <option value="-1">Adaptive (fewest triangles)</option>
                 <option value="0">Auto (triangle budget)</option>
                 <option value="1">1 m (full LIDAR)</option><option value="2">2 m</option><option value="3">3 m</option>
                 <option value="5">5 m</option><option value="10">10 m</option><option value="20">20 m</option>
               </select>
             </label>
-            <label>Triangle budget (auto)
+            <label>Adaptive accuracy (max error)
+              <select id="terrainTol" data-persist>
+                <option value="0.05">±5 cm (very accurate)</option><option value="0.1" selected>±10 cm</option>
+                <option value="0.25">±25 cm</option><option value="0.5">±50 cm</option><option value="1">±1 m (light)</option>
+              </select>
+            </label>
+            <label>Triangle budget (cap)
               <select id="maxTris" data-persist>
                 <option value="100000">0.1 M — very light</option>
                 <option value="250000">0.25 M — light</option>

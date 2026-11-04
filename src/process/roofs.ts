@@ -39,7 +39,7 @@ export function orientedBox(ring: Ring): { centre: XY; axis: XY; a: number; b: n
 /** Samples closer than this to the outline (m) are ignored: OSM outlines are rarely within 1 m of the true wall. */
 const EDGE_INSET = 1.0;
 
-function edgeDistance(x: number, y: number, rings: Ring[]): number {
+export function edgeDistance(x: number, y: number, rings: Ring[]): number {
   let best = Infinity;
   for (const r of rings) {
     for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
@@ -133,6 +133,13 @@ export function roofLines(f: RoofFit): { ridge: [XY, XY] | null; hips: [XY, XY][
   if (f.type === 'flat') return { ridge: null, hips: [], z: f.ridge };
   const { centre: [cx, cy], axis: [ux, uy], a, b } = f;
   const pt = (u: number, v: number): XY => [cx + u * ux - v * uy, cy + u * uy + v * ux];
+  if (f.type === 'shed') {
+    // The high edge of a mono-pitch roof is its "ridge".
+    const [, pa, pb] = f.plane ?? [0, 1, 0];
+    return Math.abs(pa) >= Math.abs(pb)
+      ? { ridge: [pt(Math.sign(pa) * a, -b), pt(Math.sign(pa) * a, b)], hips: [], z: f.ridge }
+      : { ridge: [pt(-a, Math.sign(pb) * b), pt(a, Math.sign(pb) * b)], hips: [], z: f.ridge };
+  }
   const k = f.type === 'gable' ? a : Math.max(0, a - b);
   const hips: [XY, XY][] = f.type === 'hip'
     ? [[pt(-a, -b), pt(-k, 0)], [pt(-a, b), pt(-k, 0)], [pt(a, -b), pt(k, 0)], [pt(a, b), pt(k, 0)]]
@@ -161,7 +168,7 @@ function roofRegions(f: RoofFit): { uv: XY[]; z: (u: number, v: number) => numbe
 
 /** Closed LOD1.5 solid for a building with a gable or hip roof; null when the fit is flat. */
 export function roofedBuildingMesh(b: Building, f: RoofFit, origin: XY, floorZ: number): Mesh | null {
-  if (f.type === 'flat') return null;
+  if (f.type === 'flat' || f.type === 'shed') return null;
   const { centre: [cx, cy], axis: [ux, uy] } = f;
   const toLocal = (u: number, v: number): [number, number] => [cx + u * ux - v * uy - origin[0], cy + u * uy + v * ux - origin[1]];
   const toBox = (x: number, y: number): [number, number] => {

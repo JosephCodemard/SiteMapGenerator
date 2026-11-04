@@ -145,6 +145,7 @@ export function triangulateLoops(loops: number[][], p: ArrayLike<number>): numbe
 export function solidWithFlatFloor(surface: Mesh, floorZ: number): Mesh {
   const p = surface.positions;
   const pos = Array.from(p);
+  const uvs = surface.uvs ? Array.from(surface.uvs) : null;
   const idx = Array.from(surface.indices);
   const bottom = new Map<number, number>();
   const bot = (v: number) => {
@@ -152,6 +153,7 @@ export function solidWithFlatFloor(surface: Mesh, floorZ: number): Mesh {
     if (b === undefined) {
       b = pos.length / 3;
       pos.push(p[v * 3], p[v * 3 + 1], floorZ);
+      if (uvs) uvs.push(surface.uvs![v * 2], surface.uvs![v * 2 + 1]);
       bottom.set(v, b);
     }
     return b;
@@ -166,7 +168,7 @@ export function solidWithFlatFloor(surface: Mesh, floorZ: number): Mesh {
   // Floor: the boundary loops, triangulated, facing down.
   const tris = triangulateLoops(loops, p);
   for (let t = 0; t < tris.length; t += 3) idx.push(bot(tris[t]), bot(tris[t + 2]), bot(tris[t + 1]));
-  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx), uvs: uvs ? new Float32Array(uvs) : undefined };
 }
 
 /**

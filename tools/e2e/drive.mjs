@@ -34,7 +34,8 @@ console.log('fetch+model s', (Date.now() - t0) / 1000);
 await page.waitForTimeout(1500);
 await page.screenshot({ path: `${out}/2-model-lod1.png` });
 
-for (const lod of ['lod15', 'lod2']) {
+await page.selectOption('#terrainStep', '-1'); // adaptive terrain
+for (const lod of ['lod15', 'lod2fit', 'lod2']) {
   const t = Date.now();
   await page.selectOption('#lod', lod);
   await page.click('#rebuild');
