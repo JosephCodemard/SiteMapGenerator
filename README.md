@@ -57,6 +57,18 @@ Everything runs in the browser. Data is fetched live from public APIs that allow
 - **SVG/PNG:** a sheet at the chosen paper scale with scale bar, north arrow and attribution. The SVG layers are named groups (Illustrator/Inkscape).
 - **Laser stack DXF:** one layer per level in mm at model scale, either laid out sheet by sheet or stacked at height.
 
+## Analysis panel (step 4)
+
+All analyses run client-side in a Web Worker (cancellable) and render over a hillshade/buildings/roads base; each can be saved as an image and as data (ESRI ASCII grid or CSV). They are **screening tools**, labelled as such in the app.
+
+| Analysis | Method | Data | Limits |
+|---|---|---|---|
+| **Shadow & sun hours** | NOAA solar position (tested against published day lengths and noon altitudes); heightfield ray-march on the 1 m DSM; sun-hours = shadows every 15–60 min from sunrise to sunset; BRE 209 "≥ 2 h on 21 March" share; planning-date buttons; UK clock time with BST | LIDAR DSM | trees are opaque; 1 m surface |
+| **Wind comfort** | Pedestrian-level speed ratio: open-terrain log law reduced by upwind frontal-area index, wakes ≈ 8 obstacle heights, channelling along open streets between tall buildings; Lawson-style classes. "Use local climate" sets direction/speed from the last year of Open-Meteo hourly wind (prevailing direction, 95th percentile) | DSM, DTM, Open-Meteo | empirical, not CFD |
+| **Flooding** | Bathtub fill from water on site (or the lowest point) to connected ground below a chosen level, EA defences as walls of a chosen height, per-building depth; or rain **ponding** (priority-flood depressions). Overlays EA **Flood Zones 2/3** and **flood defences** (live) | DTM, EA | indicative extent only |
+| **Crime** | data.police.uk street-level crime for the site outline, 3–12 months, category filter, kernel-density heatmap, top categories/streets | Police API | anonymised locations, counts not rates |
+| **Entrances & activity** | OSM `entrance` nodes snapped to walls, doors inferred facing the nearest street/path; gravity-weighted shortest-path flows from entrances (weighted by floor area) to shops, cafés, attractions, stops and commercial buildings, with sliders for homes / retail / transit | OSM | a model of likely activity, not counted footfall |
+
 ## Site shapes, extra data and markings
 
 - **Custom site shapes:** rectangle, hexagon, circle, or a free polygon (click corners; double-click/Enter to finish; Backspace removes a corner; Esc cancels; *Undo* restores the previous area). Data is fetched for the bounding box and clipped exactly to the outline; the terrain is cut to the outline (edge, skirt and base follow it), drawings and laser sheets are clipped to it. The 4 km² limit applies to the polygon's area.

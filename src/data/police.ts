@@ -58,16 +58,34 @@ export async function latestMonth(): Promise<string> {
   return dates[0].date;
 }
 
-/** Fetch `months` months of crime for the outline (one request per month, spaced out for the 15 req/s limit). */
-export async function fetchCrimes(outline: Ring, bbox: BBox, months = 6, onProgress?: (done: number, total: number) => void): Promise<Crime[]> {
+/**
+ * Fetch `months` months of crime for the outline (one request per month, spaced out for the 15 req/s limit).
+ * A month that fails twice (the API sometimes rate-limits without CORS headers) is skipped and reported through
+ * `onWarn`; the run only fails if every month does.
+ */
+export async function fetchCrimes(
+  outline: Ring, bbox: BBox, months = 6, onProgress?: (done: number, total: number) => void, onWarn?: (msg: string) => void,
+  timing = { retry: 1500, spacing: 150 },
+): Promise<Crime[]> {
   const list = monthsBack(await latestMonth(), months);
   const out: Crime[] = [];
+  const failed: string[] = [];
   for (let i = 0; i < list.length; i++) {
-    const raw = await getJson<Raw[]>(crimeUrl(outline, list[i]), DAY * 7);
-    out.push(...parseCrimes(raw));
+    let ok = false;
+    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+      try {
+        out.push(...parseCrimes(await getJson<Raw[]>(crimeUrl(outline, list[i]), DAY * 7)));
+        ok = true;
+      } catch {
+        await new Promise((r) => setTimeout(r, attempt ? 0 : timing.retry));
+      }
+    }
+    if (!ok) failed.push(list[i]);
     onProgress?.(i + 1, list.length);
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, timing.spacing));
   }
+  if (failed.length === list.length) throw new Error('data.police.uk did not respond (try again in a minute)');
+  if (failed.length) onWarn?.(`Police data: skipped ${failed.join(', ')} (no response).`);
   // The API returns the polygon's area; keep only points inside the real outline / box.
   return out.filter((c) => (outline.length > 4 ? pointInShape(c.p, outline) : c.p[0] >= bbox.minE && c.p[0] <= bbox.maxE && c.p[1] >= bbox.minN && c.p[1] <= bbox.maxN));
 }

@@ -78,3 +78,13 @@ a { color: #c0005b; }
 #legend .n { margin-left: auto; color: #888; font-variant-numeric: tabular-nums; }
 #legend .total { border-top: 1px solid #eee; margin-top: 4px; padding-top: 4px; color: #555; }
 #legend .warn { color: #c00; }
+
+/* ---- analysis ---- */
+#view-analysis { overflow: auto; background: #777; }
+#view-analysis canvas { display: block; margin: 12px auto; max-width: calc(100% - 24px); height: auto; background: #fff; box-shadow: 0 2px 12px #0005; }
+#anLegend { position: sticky; bottom: 10px; margin: 0 auto; width: fit-content; background: #fffffff2; border-radius: 6px; padding: 6px 12px; font-size: 12px; box-shadow: 0 2px 8px #0003; }
+#anLegend .bar { height: 10px; width: 260px; border-radius: 3px; margin: 3px 0; }
+#anLegend .ticks { display: flex; justify-content: space-between; color: #555; }
+#anLegend .cls { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
+#anLegend .cls i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+[hidden] { display: none !important; }

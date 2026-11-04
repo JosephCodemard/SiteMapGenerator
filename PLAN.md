@@ -267,4 +267,5 @@ Order rationale: M1 answers the user's two most specific requests (roofs, adapti
 | M2 data modules (NHLE, flood zones, defences, police, weather, OSM points) + IndexedDB cache | **done**, tested against fixtures shaped like the live responses (endpoints probed live) |
 | M2 road markings, building attributes (CSV/GeoJSON), listed buildings | **done** |
 | Side-elevation slice (4.6) | planned in M4 |
-| M2 – M6 | not started |
+| M3 analysis (sun/shadow, wind, flood, crime, entrances/footfall, worker, panel) | **done**: 31 numerical tests; all five run live in the browser on Pulteney (EA flood zones/defences and police data fetched live) |
+| M4 – M6 | not started |

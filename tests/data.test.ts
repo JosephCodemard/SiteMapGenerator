@@ -94,6 +94,23 @@ describe('EA flood zones, defences, wind, crime', () => {
     expect(Math.hypot(out[0].p[0] - 375200, out[0].p[1] - 164900)).toBeLessThan(0.1);
     expect(parseCrimes([crime])[0].category).toBe('burglary');
   });
+  it('skips a month that keeps failing, warns, and only throws if everything fails', async () => {
+    const [lon, la] = toWGS(375200, 164900);
+    const crime = { category: 'burglary', month: '2026-08', location: { latitude: String(la), longitude: String(lon), street: { name: 'On or near X' } }, outcome_status: null };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('crimes-street-dates')) return { ok: true, status: 200, json: async () => [{ date: '2026-08' }] };
+      if (url.includes('date=2026-07')) return { ok: false, status: 429, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => [crime] };
+    }));
+    const warns: string[] = [];
+    const box = [[375031, 164745], [375431, 164745], [375431, 165145], [375031, 165145]] as [number, number][];
+    const out = await fetchCrimes(box, bbox, 3, undefined, (m) => warns.push(m), { retry: 0, spacing: 0 });
+    expect(out).toHaveLength(2);
+    expect(warns[0]).toContain('2026-07');
+    clearMemoryCache();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('dates') ? { ok: true, status: 200, json: async () => [{ date: '2026-08' }] } : { ok: false, status: 503, json: async () => ({}) })));
+    await expect(fetchCrimes(box, bbox, 2, undefined, undefined, { retry: 0, spacing: 0 })).rejects.toThrow(/did not respond/);
+  });
   it('summarises a wind rose', () => {
     const dirs = [...Array(80).fill(225), ...Array(20).fill(45)];
     const speeds = [...Array(80).fill(6), ...Array(20).fill(2)];

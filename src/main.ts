@@ -18,6 +18,7 @@ import {
 import { writeContourStackDxf, writeDxf, writeDxfMesh } from './export/dxf';
 import { writeObj } from './export/obj';
 import { writeStl } from './export/stl';
+import { initAnalysis } from './ui/analysis';
 import { AreaMap } from './view/map';
 import { Viewer3D } from './view/viewer3d';
 import { bboxOf, clipPolygonToShape, polygonArea } from './process/shape';
@@ -698,6 +699,7 @@ for (const l of LAYER_DEFS) {
   layersEl.appendChild(lab);
 }
 
+initAnalysis({ site: () => site, log, busy, stage, selectTab, download });
 document.querySelectorAll('.needs-data').forEach((s) => s.classList.add('disabled'));
 updateMeshSummary();
 // Exposed for debugging in the console.

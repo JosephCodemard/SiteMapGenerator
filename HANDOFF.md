@@ -247,6 +247,12 @@ Custom shapes (`process/shape.ts`, `view/map.ts` tools, `SiteData.shape`), data 
 - Dropping "tiny" draped pieces left holes: only exactly-degenerate pieces are dropped now.
 Verified: hexagonal site end to end in the browser (STL closure for terrain, buildings, markings 88/88).
 
+## 7d. Iteration 3, milestone M3 (2026-11-04)
+
+`src/analysis/`: `sun`, `shadow`, `flood`, `wind`, `crime`, `entrances`, `footfall`, `render`, `tasks` (+ `analysis.worker.ts`; `runTask` falls back to inline when there is no Worker), UI in `src/ui/analysis.ts`. Tested against analytic answers (day length, noon altitude, shadow length = h / tan(alt), flood connectivity, trip conservation). Live e2e: shadow 2.4 s, wind 1.1 s, flood 4.1 s (EA fetch), crime 6.9 s (6 months), footfall 1.1 s on Pulteney.
+Lessons: data.police.uk sometimes errors without CORS headers (rate limiting): `fetchCrimes` retries then skips a month and warns. The wind and footfall models are heuristics: calibrate against CFD/counts before trusting numbers; the UI says so.
+Not done: analysis results are not yet embedded in drawing sheets (M4), and the scene itself isn't built in a worker yet (M6).
+
 ## 8. Next steps
 
 Ordered by value to the architecture and fabrication workflow. Each item says where it fits in the current code.

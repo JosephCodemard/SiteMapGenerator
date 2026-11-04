@@ -185,9 +185,85 @@
       </div>
     </details>
 
-    <!-- ───────────── 4 · EXPORT ───────────── -->
+    <!-- ───────────── 4 · ANALYSIS ───────────── -->
+    <details class="step needs-data" id="analysisStep">
+      <summary><span class="num">4</span> Analysis <span class="badge">screening tools</span></summary>
+      <div class="body">
+        <label>Analysis
+          <select id="anType">
+            <option value="shadow">Shadow &amp; sun hours</option>
+            <option value="wind">Wind comfort (screening)</option>
+            <option value="flood">Flooding (screening)</option>
+            <option value="crime">Crime (police data)</option>
+            <option value="footfall">Entrances &amp; pedestrian activity</option>
+          </select>
+        </label>
+
+        <div data-an="shadow">
+          <div class="grid2">
+            <label>Date (UK)<input type="date" id="anDate" value="2026-06-21" /></label>
+            <label>Show
+              <select id="anShadowMode"><option value="hours">Hours of sun (whole day)</option><option value="at">Shadow at a time</option></select>
+            </label>
+            <label>Time (UK clock)<input type="time" id="anTime" value="12:00" /></label>
+            <label>Step (min)<select id="anStep"><option>60</option><option selected>30</option><option>15</option></select></label>
+          </div>
+          <div class="presets"><span>Planning dates:</span>
+            <button data-date="2026-03-21">21 Mar</button><button data-date="2026-06-21">21 Jun</button>
+            <button data-date="2026-09-21">21 Sep</button><button data-date="2026-12-21">21 Dec</button>
+          </div>
+          <p class="hint">Buildings, trees and terrain cast shadows (1 m LIDAR surface). BRE guidance looks for ≥ 2 h of sun on 21 March over half of an amenity space.</p>
+        </div>
+
+        <div data-an="wind" hidden>
+          <div class="grid2">
+            <label>Wind from (°, 0 = N)<input type="number" id="anWindDir" value="225" min="0" max="359" /></label>
+            <label>Reference speed (m/s, open 10 m)<input type="number" id="anWindSpeed" value="8" min="1" max="30" step="0.5" /></label>
+          </div>
+          <button id="anWindClimate">Use local climate (Open-Meteo, last year)</button>
+          <p class="hint">Indicative model: urban roughness, wakes behind tall buildings and street channelling. Not CFD or a wind-tunnel study.</p>
+        </div>
+
+        <div data-an="flood" hidden>
+          <div class="grid2">
+            <label>Mode<select id="anFloodMode"><option value="river">River / tidal level (bathtub)</option><option value="rain">Rain ponding (low spots)</option></select></label>
+            <label>Water level (m ODN)<input type="number" id="anFloodLevel" step="0.1" placeholder="auto" /></label>
+            <label>Defence height (m)<input type="number" id="anDefence" value="1.2" step="0.1" min="0" /></label>
+            <label class="inline"><input type="checkbox" id="anZones" checked /> EA flood zones &amp; defences</label>
+          </div>
+          <p class="hint">Water spreads from rivers/water on the site to connected lower ground. Indicative extent only, not a flood-risk assessment.</p>
+        </div>
+
+        <div data-an="crime" hidden>
+          <div class="grid2">
+            <label>Months<select id="anMonths"><option>3</option><option selected>6</option><option>12</option></select></label>
+            <label>Category<select id="anCrimeCat"><option value="all">All crime</option></select></label>
+          </div>
+          <p class="hint">data.police.uk street-level crime. Locations are anonymised to street points, so this shows where reports are attributed, not exact incidents or rates.</p>
+        </div>
+
+        <div data-an="footfall" hidden>
+          <div class="grid3">
+            <label>Homes<input type="range" id="anWRes" min="0" max="3" step="0.25" value="1" /></label>
+            <label>Shops &amp; cafés<input type="range" id="anWRet" min="0" max="3" step="0.25" value="1" /></label>
+            <label>Transit<input type="range" id="anWTra" min="0" max="3" step="0.25" value="1" /></label>
+          </div>
+          <p class="hint">A route model on the street/path network from entrances (OSM, else inferred) to shops and stops. Likely activity, not counted footfall.</p>
+        </div>
+
+        <div class="grid2 buttons">
+          <button id="anRun" class="primary">Run analysis</button>
+          <button id="anCancel">Cancel</button>
+          <button id="anPng">Save image</button>
+          <button id="anData">Save data</button>
+        </div>
+        <div id="anSummary" class="hint"></div>
+      </div>
+    </details>
+
+    <!-- ───────────── 5 · EXPORT ───────────── -->
     <details class="step needs-data" open>
-      <summary><span class="num">4</span> Export</summary>
+      <summary><span class="num">5</span> Export</summary>
       <div class="body">
         <h3>3D model <span class="hint">— every layer is a separate object</span></h3>
         <div class="grid2">
@@ -283,6 +359,7 @@
       <button data-tab="map" class="active">Map</button>
       <button data-tab="model">3D preview</button>
       <button data-tab="drawing">Drawing</button>
+      <button data-tab="analysis">Analysis</button>
       <span id="busy" hidden>Working…</span>
     </nav>
     <div id="view-map" class="view active"></div>
@@ -290,6 +367,7 @@
       <div class="empty">Fetch data to see the 3D model.</div>
       <div id="legend" hidden></div>
     </div>
+    <div id="view-analysis" class="view"><div class="empty">Choose an analysis and press “Run analysis”.</div><div id="anLegend" hidden></div></div>
     <div id="view-drawing" class="view"><div class="empty">Fetch data, then “Preview drawing”.</div></div>
   </main>
   <script type="module" src="/src/main.ts"></script>

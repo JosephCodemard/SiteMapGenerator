@@ -68,6 +68,21 @@ for (const id of exports) {
   console.log('download', id, dl.suggestedFilename());
   await idle();
 }
+// Analyses (flood and crime use the live EA / police services).
+for (const [type, setup] of [['shadow', null], ['wind', null], ['flood', null], ['crime', null], ['footfall', null]]) {
+  await page.selectOption('#anType', type);
+  if (type === 'shadow') await page.selectOption('#anStep', '60');
+  const t = Date.now();
+  await page.click('#anRun');
+  await page.waitForTimeout(300);
+  await idle();
+  await page.waitForTimeout(800);
+  console.log('analysis', type, ((Date.now() - t) / 1000).toFixed(1) + 's:', (await page.textContent('#anSummary')).slice(0, 230));
+  await page.screenshot({ path: `${out}/4-analysis-${type}.png` });
+}
+const [adl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#anData')]);
+await adl.saveAs(`${out}/${adl.suggestedFilename()}`);
+console.log('download analysis data', adl.suggestedFilename());
 // OBJ as a single combined file as well.
 await page.selectOption('#structure', 'combined');
 const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#exportObj')]);
